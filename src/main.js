@@ -1,7 +1,18 @@
 import express from 'express';
+import cors from 'cors';
 import productsRouter from './routes/products.js';
 
 const app = express();
+
+const corsOptions = {
+  origin: process.env.CORS_ORIGIN || 'https://slateblue-yak-958515.hostingersite.com',
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
+
 
 // Root health/smoke route (keep this working)
 app.get('/', (_req, res) => {
