@@ -1,0 +1,33 @@
+{
+  "name": "anfastyles-api",
+  "type": "module",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AnfaStyles backend API (Express).",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/medamineaitaich/anfastyles-api.git"
+  },
+  "scripts": {
+    "dev": "node --watch src/main.js",
+    "start": "node src/main.js",
+    "lint": "eslint . --quiet"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "cookie-parser": "^1.4.6",
+    "dotenv": "^16.4.7",
+    "express": "^5.0.1",
+    "helmet": "^8.0.0",
+    "morgan": "^1.10.0",
+    "axios": "^1.6.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^8.57.0",
+    "eslint": "^8.57.1",
+    "globals": "^15.14.0"
+  }
+}
