@@ -13,11 +13,11 @@ import { initializeWooCommerceAPI } from './utils/woocommerce.js';
 const app = express();
 
 process.on('uncaughtException', (error) => {
-	logger.error('Uncaught exception:', error);
+	logger.error('Uncaught exception:', error?.stack || error);
 });
   
 process.on('unhandledRejection', (reason, promise) => {
-	logger.error('Unhandled rejection at:', promise, 'reason:', reason);
+	logger.error('Unhandled rejection at:', promise, 'reason:', reason?.stack || reason);
 });
 
 process.on('SIGINT', async () => {
@@ -44,12 +44,19 @@ app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Initialize WooCommerce API on startup
+// Basic root route for deployment smoke test
+app.get('/', (_req, res) => {
+	res.json({ ok: true, service: 'anfastyles-api' });
+});
+
+// Initialize WooCommerce API on startup (do not block server startup)
+let wooInitialized = false;
 try {
 	initializeWooCommerceAPI();
+	wooInitialized = true;
 } catch (error) {
-	logger.error('Failed to initialize WooCommerce API:', error.message);
-	process.exit(1);
+	// Keep the server alive so we can validate process startup/binding before debugging Woo routes.
+	logger.error('WooCommerce init failed (server will still start):', error?.stack || error);
 }
 
 app.use('/', routes());
@@ -60,10 +67,19 @@ app.use((req, res) => {
 	res.status(404).json({ error: 'Route not found' });
 });
 
-const port = process.env.PORT || 3001;
+const port = Number(process.env.PORT) || 3001;
+const host = process.env.HOST || '0.0.0.0';
 
-app.listen(port, () => {
-	logger.info(`🚀 API Server running on http://localhost:${port}`);
+console.log(`[startup] service=anfastyles-api port=${port} host=${host} node_env=${process.env.NODE_ENV || 'undefined'} woo_initialized=${wooInitialized}`);
+console.log(`[startup] cors_origin=${process.env.CORS_ORIGIN || 'undefined'}`);
+
+const server = app.listen(port, host, () => {
+	logger.info(`🚀 API Server started (port=${port}, host=${host})`);
+});
+
+server.on('error', (error) => {
+	logger.error('Server listen error:', error?.stack || error);
+	process.exit(1);
 });
 
 export default app;
