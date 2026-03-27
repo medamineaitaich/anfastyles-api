@@ -19,7 +19,8 @@ router.get('/', async (req, res) => {
     perPage: perPage ? parseInt(perPage) : 20,
   };
 
-  const products = await getProducts(filters);
+  const result = await getProducts(filters);
+  const products = result?.products || [];
 
   res.json({
     products: products.map((product) => ({
@@ -32,6 +33,8 @@ router.get('/', async (req, res) => {
     })),
     page: filters.page,
     perPage: filters.perPage,
+    total: result?.total ?? products.length,
+    totalPages: result?.totalPages ?? undefined,
   });
 });
 
@@ -71,13 +74,13 @@ router.get('/:id', async (req, res) => {
     price: product.price,
     regularPrice: product.regular_price,
     salePrice: product.sale_price,
-    images: product.images.map((img) => img.src),
+    images: (product.images || []).map((img) => img.src),
     rating: product.average_rating,
     reviewCount: product.review_count,
     inStock: product.in_stock,
     stockQuantity: product.stock_quantity,
     sku: product.sku,
-    reviews: reviews.map((review) => ({
+    reviews: (reviews || []).map((review) => ({
       id: review.id,
       rating: review.rating,
       review: review.review,

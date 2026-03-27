@@ -35,8 +35,30 @@ process.on('SIGTERM', async () => {
 });
 
 app.use(helmet());
+const parseCorsOrigins = (value) => {
+	if (!value) return null;
+	const raw = String(value).trim();
+	if (!raw) return null;
+	return raw
+		.split(',')
+		.map((s) => s.trim())
+		.filter(Boolean);
+};
+
+const defaultCorsOrigins = [
+	'http://localhost:3000',
+	'http://127.0.0.1:3000',
+	'https://anfastyles.shop',
+];
+
+const allowedOrigins = parseCorsOrigins(process.env.CORS_ORIGIN) || defaultCorsOrigins;
+
 app.use(cors({
-	origin: process.env.CORS_ORIGIN,
+	origin: (origin, callback) => {
+		// Allow non-browser clients (curl/postman) with no Origin header
+		if (!origin) return callback(null, true);
+		return callback(null, allowedOrigins.includes(origin));
+	},
 	credentials: true,
 }));
 app.use(morgan('combined'));

@@ -20,19 +20,31 @@ const createBasicAuthHeader = () => {
   return `Basic ${Buffer.from(credentials).toString('base64')}`;
 };
 
-// Initialize WooCommerce client with Basic Auth
-const wcClient = axios.create({
-  baseURL: `${process.env.WC_STORE_URL}/wp-json/wc/v3`,
-  headers: {
-    'Authorization': createBasicAuthHeader(),
-    'Content-Type': 'application/json',
-  },
-});
+let wcClient = null;
+let wpClient = null;
 
-// WordPress client (no auth required for public endpoints)
-const wpClient = axios.create({
-  baseURL: `${process.env.WC_STORE_URL}/wp-json/wp/v2`,
-});
+// Create clients lazily so startup failures point at missing env vars clearly.
+const getWcClient = () => {
+  if (!wcClient) {
+    wcClient = axios.create({
+      baseURL: `${process.env.WC_STORE_URL}/wp-json/wc/v3`,
+      headers: {
+        'Authorization': createBasicAuthHeader(),
+        'Content-Type': 'application/json',
+      },
+    });
+  }
+  return wcClient;
+};
+
+const getWpClient = () => {
+  if (!wpClient) {
+    wpClient = axios.create({
+      baseURL: `${process.env.WC_STORE_URL}/wp-json/wp/v2`,
+    });
+  }
+  return wpClient;
+};
 
 // Error handler for API calls
 const handleApiError = (error, context) => {
@@ -73,6 +85,14 @@ export const getProducts = async (filters = {}) => {
         case 'price':
           params.orderby = 'price';
           break;
+        case 'price_asc':
+          params.orderby = 'price';
+          params.order = 'asc';
+          break;
+        case 'price_desc':
+          params.orderby = 'price';
+          params.order = 'desc';
+          break;
         default:
           break;
       }
@@ -82,8 +102,15 @@ export const getProducts = async (filters = {}) => {
     params.per_page = filters.perPage || 20;
     params.status = 'publish';
 
-    const response = await wcClient.get('/products', { params });
-    return response.data;
+    const response = await getWcClient().get('/products', { params });
+    const total = parseInt(response.headers?.['x-wp-total'] || '0', 10) || 0;
+    const totalPages = parseInt(response.headers?.['x-wp-totalpages'] || '0', 10) || 0;
+
+    return {
+      products: response.data,
+      total,
+      totalPages,
+    };
   } catch (error) {
     handleApiError(error, 'getProducts');
   }
@@ -91,7 +118,7 @@ export const getProducts = async (filters = {}) => {
 
 export const getFeaturedProducts = async (limit = 10) => {
   try {
-    const response = await wcClient.get('/products', {
+    const response = await getWcClient().get('/products', {
       params: {
         featured: true,
         per_page: limit,
@@ -106,7 +133,7 @@ export const getFeaturedProducts = async (limit = 10) => {
 
 export const getProductById = async (productId) => {
   try {
-    const response = await wcClient.get(`/products/${productId}`);
+    const response = await getWcClient().get(`/products/${productId}`);
     return response.data;
   } catch (error) {
     handleApiError(error, `getProductById(${productId})`);
@@ -115,7 +142,11 @@ export const getProductById = async (productId) => {
 
 export const getProductReviews = async (productId) => {
   try {
-    const response = await wcClient.get(`/products/${productId}/reviews`);
+    const response = await getWcClient().get('/products/reviews', {
+      params: {
+        product: productId,
+      },
+    });
     return response.data;
   } catch (error) {
     handleApiError(error, `getProductReviews(${productId})`);
@@ -124,7 +155,7 @@ export const getProductReviews = async (productId) => {
 
 export const createWooCommerceCustomer = async (customerData) => {
   try {
-    const response = await wcClient.post('/customers', {
+    const response = await getWcClient().post('/customers', {
       email: customerData.email,
       first_name: customerData.firstName || '',
       last_name: customerData.lastName || '',
@@ -139,7 +170,7 @@ export const createWooCommerceCustomer = async (customerData) => {
 
 export const createWooCommerceOrder = async (orderData) => {
   try {
-    const response = await wcClient.post('/orders', orderData);
+    const response = await getWcClient().post('/orders', orderData);
     return response.data;
   } catch (error) {
     handleApiError(error, 'createWooCommerceOrder');
@@ -148,7 +179,7 @@ export const createWooCommerceOrder = async (orderData) => {
 
 export const getWooCommerceOrder = async (orderId) => {
   try {
-    const response = await wcClient.get(`/orders/${orderId}`);
+    const response = await getWcClient().get(`/orders/${orderId}`);
     return response.data;
   } catch (error) {
     handleApiError(error, `getWooCommerceOrder(${orderId})`);
@@ -157,7 +188,7 @@ export const getWooCommerceOrder = async (orderId) => {
 
 export const getWooCommerceOrdersByCustomer = async (customerId) => {
   try {
-    const response = await wcClient.get('/orders', {
+    const response = await getWcClient().get('/orders', {
       params: {
         customer: customerId,
       },
@@ -171,7 +202,7 @@ export const getWooCommerceOrdersByCustomer = async (customerId) => {
 // WordPress API calls
 export const getWordPressUsers = async (search) => {
   try {
-    const response = await wpClient.get('/users', {
+    const response = await getWpClient().get('/users', {
       params: {
         search,
       },
@@ -201,6 +232,8 @@ export const verifyWordPressUser = async (email, password) => {
 // Export validation function for startup
 export const initializeWooCommerceAPI = () => {
   validateCredentials();
+  getWcClient();
+  getWpClient();
 };
 
 export default {
