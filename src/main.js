@@ -1,69 +1,45 @@
-import 'dotenv/config';
 import express from 'express';
-import cookieParser from 'cookie-parser';
 import cors from 'cors';
-import helmet from 'helmet';
-import morgan from 'morgan';
-
-import routes from './routes/index.js';
-import { errorMiddleware } from './middleware/index.js';
-import logger from './utils/logger.js';
-import { initializeWooCommerceAPI } from './utils/woocommerce.js';
+import productsRouter from './routes/products.js';
 
 const app = express();
 
-process.on('uncaughtException', (error) => {
-	logger.error('Uncaught exception:', error);
-});
-  
-process.on('unhandledRejection', (reason, promise) => {
-	logger.error('Unhandled rejection at:', promise, 'reason:', reason);
-});
+const corsOptions = {
+  origin: process.env.CORS_ORIGIN || 'https://slateblue-yak-958515.hostingersite.com',
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+};
 
-process.on('SIGINT', async () => {
-	logger.info('Interrupted');
-	process.exit(0);
-});
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
-process.on('SIGTERM', async () => {
-	logger.info('SIGTERM signal received');
 
-	await new Promise(resolve => setTimeout(resolve, 3000));
-
-	logger.info('Exiting');
-	process.exit();
+// Root health/smoke route (keep this working)
+app.get('/', (_req, res) => {
+  res.json({ ok: true, service: 'anfastyles-api', mode: 'products-only' });
 });
 
-app.use(helmet());
-app.use(cors({
-	origin: process.env.CORS_ORIGIN,
-	credentials: true,
-}));
-app.use(morgan('combined'));
-app.use(cookieParser());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Products-only API slice
+app.use('/products', (req, _res, next) => {
+  console.log(`[req] ${req.method} ${req.originalUrl}`);
+  next();
+});
+app.use('/products', productsRouter);
 
-// Initialize WooCommerce API on startup
-try {
-	initializeWooCommerceAPI();
-} catch (error) {
-	logger.error('Failed to initialize WooCommerce API:', error.message);
-	process.exit(1);
-}
-
-app.use('/', routes());
-
-app.use(errorMiddleware);
-
-app.use((req, res) => {
-	res.status(404).json({ error: 'Route not found' });
+// Minimal error handler so async route errors return JSON (instead of crashing or hanging)
+app.use((err, _req, res, _next) => {
+  console.error('[error]', err?.stack || err);
+  res.status(500).json({ ok: false, error: 'Internal Server Error' });
 });
 
+const host = '0.0.0.0';
 const port = process.env.PORT || 3001;
 
-app.listen(port, () => {
-	logger.info(`🚀 API Server running on http://localhost:${port}`);
+const server = app.listen(port, host, () => {
+  console.log(`[startup] products-only listening on http://${host}:${port}`);
 });
 
-export default app;
+server.on('error', (error) => {
+  console.error('[startup] listen error:', error?.stack || error);
+  process.exit(1);
+});
