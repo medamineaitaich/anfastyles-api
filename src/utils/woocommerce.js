@@ -215,14 +215,35 @@ export const getWordPressUsers = async (search) => {
 
 export const verifyWordPressUser = async (email, password) => {
   try {
-    const response = await axios.post(
-      `${process.env.WC_STORE_URL}/wp-json/jwt-auth/v1/token`,
-      {
-        username: email,
-        password,
-      }
-    );
-    return response.data;
+    const loginUrl = `${process.env.WC_STORE_URL}/wp-login.php`;
+
+    const body = new URLSearchParams();
+    body.set('log', email);
+    body.set('pwd', password);
+    body.set('wp-submit', 'Log In');
+    body.set('redirect_to', `${process.env.WC_STORE_URL}/wp-admin/`);
+    body.set('testcookie', '1');
+
+    const response = await axios.post(loginUrl, body.toString(), {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      // WordPress typically redirects (302) on success.
+      maxRedirects: 0,
+      validateStatus: (status) => status >= 200 && status < 400,
+    });
+
+    const setCookie = response.headers?.['set-cookie'] || [];
+    const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
+    // Some platforms may coalesce multiple Set-Cookie headers into a single comma-separated string.
+    // Match by substring to be resilient (also covers "__Secure-wordpress_logged_in...").
+    const hasLoginCookie = cookies.some((c) => String(c).toLowerCase().includes('wordpress_logged_in'));
+
+    if (!hasLoginCookie) {
+      throw new Error('Invalid credentials');
+    }
+
+    return { authenticated: true };
   } catch (error) {
     logger.error('WordPress user verification failed:', error.message);
     throw new Error('Invalid credentials');
