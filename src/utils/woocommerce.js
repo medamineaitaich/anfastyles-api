@@ -168,6 +168,24 @@ export const createWooCommerceCustomer = async (customerData) => {
   }
 };
 
+export const getWooCommerceCustomerByEmail = async (email) => {
+  try {
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    if (!normalizedEmail) return null;
+
+    const response = await getWcClient().get('/customers', {
+      params: {
+        email: normalizedEmail,
+      },
+    });
+
+    const customers = Array.isArray(response.data) ? response.data : [];
+    return customers.find((c) => String(c?.email || '').trim().toLowerCase() === normalizedEmail) || customers[0] || null;
+  } catch (error) {
+    handleApiError(error, `getWooCommerceCustomerByEmail(${email})`);
+  }
+};
+
 export const createWooCommerceOrder = async (orderData) => {
   try {
     const response = await getWcClient().post('/orders', orderData);
@@ -263,6 +281,7 @@ export default {
   getProductById,
   getProductReviews,
   createWooCommerceCustomer,
+  getWooCommerceCustomerByEmail,
   createWooCommerceOrder,
   getWooCommerceOrder,
   getWooCommerceOrdersByCustomer,
