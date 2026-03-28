@@ -26,14 +26,14 @@ router.post('/login', async (req, res) => {
     }
 
     // Verify password against WordPress login form (no JWT plugin required).
+    // WordPress typically accepts either username or email in the login field,
+    // but we fall back to the stored username for compatibility.
     try {
       await verifyWordPressUser(email, password);
     } catch (e) {
-      if (usernameFromEmail) {
-        await verifyWordPressUser(usernameFromEmail, password);
-      } else {
-        throw e;
-      }
+      const username = customer.username || usernameFromEmail;
+      if (!username) throw e;
+      await verifyWordPressUser(username, password);
     }
 
     const name = `${customer.first_name || ''} ${customer.last_name || ''}`.trim() || customer.username || email;
