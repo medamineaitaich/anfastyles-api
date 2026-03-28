@@ -168,6 +168,33 @@ export const createWooCommerceCustomer = async (customerData) => {
   }
 };
 
+export const getWooCommerceCustomerByEmail = async (email) => {
+  try {
+    const response = await getWcClient().get('/customers', {
+      params: {
+        email,
+        per_page: 1,
+      },
+    });
+
+    const customers = Array.isArray(response.data) ? response.data : [];
+    if (customers.length > 0) return customers[0];
+
+    // Fallback: some setups may not support `email` filter reliably.
+    const fallback = await getWcClient().get('/customers', {
+      params: {
+        search: email,
+        per_page: 10,
+      },
+    });
+
+    const list = Array.isArray(fallback.data) ? fallback.data : [];
+    return list.find((c) => c?.email === email) || null;
+  } catch (error) {
+    handleApiError(error, `getWooCommerceCustomerByEmail(${email})`);
+  }
+};
+
 export const createWooCommerceOrder = async (orderData) => {
   try {
     const response = await getWcClient().post('/orders', orderData);
@@ -215,15 +242,47 @@ export const getWordPressUsers = async (search) => {
 
 export const verifyWordPressUser = async (email, password) => {
   try {
-    const response = await axios.post(
-      `${process.env.WC_STORE_URL}/wp-json/jwt-auth/v1/token`,
-      {
-        username: email,
-        password,
-      }
-    );
-    return response.data;
+    const loginUrl = `${process.env.WC_STORE_URL}/wp-login.php`;
+
+    const body = new URLSearchParams();
+    body.set('log', email);
+    body.set('pwd', password);
+    body.set('wp-submit', 'Log In');
+    body.set('redirect_to', `${process.env.WC_STORE_URL}/wp-admin/`);
+    body.set('testcookie', '1');
+
+    const response = await axios.post(loginUrl, body.toString(), {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      // WordPress typically redirects (302) on success.
+      maxRedirects: 0,
+      validateStatus: (status) => status >= 200 && status < 400,
+    });
+
+    const setCookie = response.headers?.['set-cookie'] || [];
+    const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
+    const hasLoginCookie = cookies.some((c) => String(c).toLowerCase().startsWith('wordpress_logged_in'));
+
+    if (!hasLoginCookie) {
+      throw new Error('Invalid credentials');
+    }
+
+    return { authenticated: true };
   } catch (error) {
+    const status = error?.response?.status;
+    const data = error?.response?.data;
+
+    // If WP returns HTML/200 without login cookies, treat as invalid credentials.
+    if (status && status >= 400 && status < 500) {
+      logger.warn('WordPress login rejected:', status);
+      throw new Error('Invalid credentials');
+    }
+
+    if (data && typeof data === 'string' && data.toLowerCase().includes('login_error')) {
+      throw new Error('Invalid credentials');
+    }
+
     logger.error('WordPress user verification failed:', error.message);
     throw new Error('Invalid credentials');
   }
@@ -242,6 +301,7 @@ export default {
   getProductById,
   getProductReviews,
   createWooCommerceCustomer,
+  getWooCommerceCustomerByEmail,
   createWooCommerceOrder,
   getWooCommerceOrder,
   getWooCommerceOrdersByCustomer,

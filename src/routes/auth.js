@@ -1,5 +1,5 @@
 import express from 'express';
-import { createWooCommerceCustomer, getWordPressUsers } from '../utils/woocommerce.js';
+import { createWooCommerceCustomer, getWooCommerceCustomerByEmail, verifyWordPressUser } from '../utils/woocommerce.js';
 import { createSession, getSession, deleteSession } from '../utils/sessionManager.js';
 import { requireAuth } from '../middleware/auth.js';
 import logger from '../utils/logger.js';
@@ -16,36 +16,56 @@ router.post('/login', async (req, res) => {
 
   logger.info(`Login attempt for email: ${email}`);
 
-  // Verify credentials against WordPress
-  const users = await getWordPressUsers(email);
-  const user = users.find((u) => u.email === email);
+  try {
+    const usernameFromEmail = String(email).split('@')[0];
 
-  if (!user) {
-    logger.warn(`Login failed - user not found: ${email}`);
-    throw new Error('Invalid credentials');
+    const customer = await getWooCommerceCustomerByEmail(email);
+    if (!customer?.id) {
+      logger.warn(`Login failed - user not found: ${email}`);
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Verify password against WordPress login form (no JWT plugin required).
+    try {
+      await verifyWordPressUser(email, password);
+    } catch (e) {
+      if (usernameFromEmail) {
+        await verifyWordPressUser(usernameFromEmail, password);
+      } else {
+        throw e;
+      }
+    }
+
+    const name = `${customer.first_name || ''} ${customer.last_name || ''}`.trim() || customer.username || email;
+    const sessionId = createSession(customer.id, {
+      email: customer.email || email,
+      name,
+    });
+
+    res.cookie('sessionId', sessionId, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    });
+
+    logger.info(`Login successful for user: ${email}`);
+
+    return res.json({
+      userId: customer.id,
+      email: customer.email || email,
+      name,
+    });
+  } catch (error) {
+    const msg = String(error?.message || '');
+    if (msg.toLowerCase().includes('invalid credentials')) {
+      logger.warn(`Login failed - invalid credentials: ${email}`);
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    logger.error('Login error:', error?.message || error);
+    return res.status(500).json({ error: 'Login failed' });
   }
-
-  // Note: Direct password verification requires JWT auth endpoint or custom verification
-  // For now, we'll create a session if user exists
-  const sessionId = createSession(user.id, {
-    email: user.email,
-    name: user.name,
-  });
-
-  logger.info(`Login successful for user: ${email}`);
-
-  res.cookie('sessionId', sessionId, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
-    maxAge: 24 * 60 * 60 * 1000, // 24 hours
-  });
-
-  res.json({
-    userId: user.id,
-    email: user.email,
-    name: user.name,
-  });
 });
 
 // POST /auth/register - Register new customer
