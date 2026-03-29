@@ -32,12 +32,19 @@ const computeCartItemsMinor = (cartItems = []) => {
 
 let cachedStripePublishableKey = null;
 let cachedStripePublishableKeyAtMs = 0;
+let cachedWooPaymentsConfig = null;
+let cachedWooPaymentsConfigAtMs = 0;
+
+const getStoreBaseUrl = () => {
+  const storeUrl = process.env.WC_STORE_URL ? String(process.env.WC_STORE_URL).trim() : '';
+  return storeUrl ? storeUrl.replace(/\/+$/, '') : '';
+};
 
 const getStripePublishableKey = async () => {
   const direct = process.env.STRIPE_PUBLISHABLE_KEY ? String(process.env.STRIPE_PUBLISHABLE_KEY).trim() : '';
   if (direct) return direct;
 
-  const storeUrl = process.env.WC_STORE_URL ? String(process.env.WC_STORE_URL).replace(/\/+$/, '') : '';
+  const storeUrl = getStoreBaseUrl();
   if (!storeUrl) return null;
 
   const now = Date.now();
@@ -60,6 +67,27 @@ const getStripePublishableKey = async () => {
   return key;
 };
 
+const getWooPaymentsConfig = async () => {
+  const storeUrl = getStoreBaseUrl();
+  if (!storeUrl) return null;
+
+  const now = Date.now();
+  if (cachedWooPaymentsConfig && now - cachedWooPaymentsConfigAtMs < 5 * 60 * 1000) {
+    return cachedWooPaymentsConfig;
+  }
+
+  const response = await axios.get(`${storeUrl}/wp-json/anfastyles/v1/woopayments-config`, {
+    timeout: 20000,
+  });
+
+  const data = response?.data;
+  if (!data || typeof data !== 'object') return null;
+
+  cachedWooPaymentsConfig = data;
+  cachedWooPaymentsConfigAtMs = now;
+  return data;
+};
+
 // GET /payments/stripe/publishable-key
 // Returns the Stripe publishable key used by the WooCommerce Stripe gateway (test/live).
 router.get('/stripe/publishable-key', async (req, res) => {
@@ -77,6 +105,43 @@ router.get('/stripe/publishable-key', async (req, res) => {
   } catch (error) {
     logger.error('Failed to load Stripe publishable key:', { message: error?.message || String(error) });
     return res.status(500).json({ error: 'Failed to load Stripe publishable key' });
+  }
+});
+
+// GET /payments/woopayments/config
+// Proxies the WooPayments headless config from WordPress so the frontend can stay on the API layer.
+router.get('/woopayments/config', async (req, res) => {
+  try {
+    const configData = await getWooPaymentsConfig();
+    if (!configData?.ok || !configData?.isReady || !configData?.config?.publishableKey) {
+      return res.status(503).json({
+        error: 'WooPayments config is not available',
+        details: configData || null,
+        requiredEnvVars: ['WC_STORE_URL'],
+      });
+    }
+
+    return res.json(configData);
+  } catch (error) {
+    const status = error?.response?.status || error?.status || 500;
+    const details = error?.response?.data || null;
+
+    logger.error('Failed to load WooPayments config:', {
+      status,
+      message: error?.message || String(error),
+    });
+
+    if (status >= 400 && status < 500) {
+      return res.status(status).json({
+        error: 'Failed to load WooPayments config',
+        details,
+      });
+    }
+
+    return res.status(500).json({
+      error: 'Failed to load WooPayments config',
+      details,
+    });
   }
 });
 
