@@ -25,7 +25,8 @@ router.post('/login', async (req, res, next) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    await verifyWordPressUser(normalizedEmail, password);
+    const wpLogin = String(customer?.username || customer?.email || normalizedEmail).trim();
+    await verifyWordPressUser(wpLogin, password);
 
     const name = `${customer.first_name || ''} ${customer.last_name || ''}`.trim() || customer.email || normalizedEmail;
     const sessionId = createSession(customer.id, {

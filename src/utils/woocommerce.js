@@ -231,12 +231,12 @@ export const getWordPressUsers = async (search) => {
   }
 };
 
-export const verifyWordPressUser = async (email, password) => {
+export const verifyWordPressUser = async (login, password) => {
   try {
     const loginUrl = `${process.env.WC_STORE_URL}/wp-login.php`;
 
     const body = new URLSearchParams();
-    body.set('log', email);
+    body.set('log', String(login || '').trim());
     body.set('pwd', password);
     body.set('wp-submit', 'Log In');
     body.set('redirect_to', `${process.env.WC_STORE_URL}/wp-admin/`);
