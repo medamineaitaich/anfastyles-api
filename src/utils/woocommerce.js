@@ -22,6 +22,7 @@ const createBasicAuthHeader = () => {
 
 let wcClient = null;
 let wpClient = null;
+const productCategoryCache = new Map();
 
 const VARIATIONS_PER_PAGE = 100;
 
@@ -70,6 +71,73 @@ const handleApiError = (error, context) => {
 const getImageSrc = (image) => {
   if (typeof image === 'string') return image || null;
   return image?.src || null;
+};
+
+const normalizeCategoryFilterValue = (value) => String(value || '')
+  .trim()
+  .toLowerCase()
+  .replace(/[_\s]+/g, '-');
+
+const findProductCategoryId = async (value) => {
+  const normalizedValue = normalizeCategoryFilterValue(value);
+  if (!normalizedValue) return null;
+
+  if (productCategoryCache.has(normalizedValue)) {
+    return productCategoryCache.get(normalizedValue);
+  }
+
+  const requests = [
+    getWcClient().get('/products/categories', {
+      params: {
+        slug: normalizedValue,
+        per_page: 100,
+      },
+    }),
+  ];
+
+  if (!/^\d+$/.test(normalizedValue)) {
+    requests.push(
+      getWcClient().get('/products/categories', {
+        params: {
+          search: String(value || '').trim(),
+          per_page: 100,
+        },
+      })
+    );
+  }
+
+  const responses = await Promise.all(requests);
+  const categories = responses.flatMap((response) => Array.isArray(response?.data) ? response.data : []);
+
+  const matchedCategory = categories.find((category) => normalizeCategoryFilterValue(category?.slug) === normalizedValue)
+    || categories.find((category) => normalizeCategoryFilterValue(category?.name) === normalizedValue)
+    || categories.find((category) => normalizeCategoryFilterValue(category?.slug).includes(normalizedValue))
+    || categories.find((category) => normalizeCategoryFilterValue(category?.name).includes(normalizedValue))
+    || null;
+
+  const matchedId = matchedCategory?.id ? String(matchedCategory.id) : null;
+  productCategoryCache.set(normalizedValue, matchedId);
+  return matchedId;
+};
+
+const resolveProductCategoryFilter = async (value) => {
+  const rawValue = String(value || '').trim();
+  if (!rawValue) return undefined;
+
+  const tokens = rawValue.split(',').map((token) => token.trim()).filter(Boolean);
+  const resolvedTokens = [];
+
+  for (const token of tokens) {
+    if (/^\d+$/.test(token)) {
+      resolvedTokens.push(token);
+      continue;
+    }
+
+    const matchedId = await findProductCategoryId(token);
+    if (matchedId) resolvedTokens.push(matchedId);
+  }
+
+  return resolvedTokens.length > 0 ? resolvedTokens.join(',') : undefined;
 };
 
 const toDisplayAttributeName = (value) => String(value || '')
@@ -246,9 +314,13 @@ export const getProducts = async (filters = {}) => {
   try {
     const params = {};
 
-    if (filters.category) params.category = filters.category;
+    if (filters.category) {
+      const resolvedCategory = await resolveProductCategoryFilter(filters.category);
+      if (resolvedCategory) params.category = resolvedCategory;
+    }
     if (filters.priceMin) params.min_price = filters.priceMin;
     if (filters.priceMax) params.max_price = filters.priceMax;
+    if (filters.search) params.search = filters.search;
     if (filters.sort) {
       switch (filters.sort) {
         case 'popularity':

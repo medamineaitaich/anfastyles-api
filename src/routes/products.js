@@ -6,14 +6,15 @@ const router = express.Router();
 
 // GET /products - Fetch products with filters
 router.get('/', async (req, res) => {
-  const { category, priceMin, priceMax, sort, page, perPage } = req.query;
+  const { category, priceMin, priceMax, sort, page, perPage, search } = req.query;
 
-  logger.info('Fetching products with filters:', { category, priceMin, priceMax, sort, page, perPage });
+  logger.info('Fetching products with filters:', { category, priceMin, priceMax, sort, page, perPage, search });
 
   const filters = {
-    category: category ? parseInt(category) : undefined,
+    category: category ? String(category).trim() : undefined,
     priceMin: priceMin ? parseFloat(priceMin) : undefined,
     priceMax: priceMax ? parseFloat(priceMax) : undefined,
+    search: search ? String(search).trim() : undefined,
     sort,
     page: page ? parseInt(page) : 1,
     perPage: perPage ? parseInt(perPage) : 20,
