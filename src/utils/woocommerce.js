@@ -23,6 +23,8 @@ const createBasicAuthHeader = () => {
 let wcClient = null;
 let wpClient = null;
 
+const VARIATIONS_PER_PAGE = 100;
+
 // Create clients lazily so startup failures point at missing env vars clearly.
 const getWcClient = () => {
   if (!wcClient) {
@@ -63,6 +65,180 @@ const handleApiError = (error, context) => {
   
   logger.error(`WooCommerce API Error (${context}):`, error.message);
   throw new Error(`Failed to connect to WooCommerce API: ${error.message}`);
+};
+
+const getImageSrc = (image) => {
+  if (typeof image === 'string') return image || null;
+  return image?.src || null;
+};
+
+const toDisplayAttributeName = (value) => String(value || '')
+  .replace(/^pa_/, '')
+  .replace(/[_-]+/g, ' ')
+  .trim()
+  .replace(/\b\w/g, (char) => char.toUpperCase());
+
+const createAttributeLookup = (productAttributes = []) => {
+  const bySlug = new Map();
+  const byName = new Map();
+
+  for (const attribute of productAttributes) {
+    const name = String(attribute?.name || '').trim();
+    const slug = String(attribute?.slug || '').trim();
+
+    const normalized = {
+      name: name || toDisplayAttributeName(slug),
+      slug: slug || name,
+      options: Array.isArray(attribute?.options)
+        ? attribute.options
+          .map((option) => String(option || '').trim())
+          .filter(Boolean)
+        : [],
+      variation: Boolean(attribute?.variation),
+    };
+
+    if (normalized.slug) {
+      bySlug.set(normalized.slug.toLowerCase(), normalized);
+    }
+
+    if (normalized.name) {
+      byName.set(normalized.name.toLowerCase(), normalized);
+    }
+  }
+
+  return { bySlug, byName };
+};
+
+const normalizeVariationAttributes = (variationAttributes = [], attributeLookup) => {
+  const selections = (variationAttributes || []).map((attribute) => {
+    const rawName = String(attribute?.name || '').trim();
+    const rawSlug = rawName.toLowerCase();
+    const rawOption = String(attribute?.option || '').trim();
+    const matchedAttribute = attributeLookup.bySlug.get(rawSlug) || attributeLookup.byName.get(rawSlug);
+
+    return {
+      name: matchedAttribute?.name || toDisplayAttributeName(rawName),
+      slug: matchedAttribute?.slug || rawName,
+      option: rawOption,
+    };
+  }).filter((attribute) => attribute.name && attribute.slug);
+
+  return {
+    attributes: Object.fromEntries(
+      selections
+        .filter((attribute) => attribute.option)
+        .map((attribute) => [attribute.name, attribute.option])
+    ),
+    attributeSelections: selections,
+  };
+};
+
+const normalizeProductAttributes = (productAttributes = [], variations = []) => {
+  const variationAttributes = productAttributes
+    .filter((attribute) => attribute?.variation)
+    .map((attribute) => {
+      const name = String(attribute?.name || '').trim();
+      const slug = String(attribute?.slug || '').trim() || name;
+      const nameKey = name.toLowerCase();
+      const slugKey = slug.toLowerCase();
+      const optionSet = new Set(
+        (Array.isArray(attribute?.options) ? attribute.options : [])
+          .map((option) => String(option || '').trim())
+          .filter(Boolean)
+      );
+
+      for (const variation of variations) {
+        for (const selection of variation?.attributeSelections || []) {
+          const selectionSlugKey = String(selection.slug || '').toLowerCase();
+          const selectionNameKey = String(selection.name || '').toLowerCase();
+
+          if (selectionSlugKey === slugKey || selectionNameKey === nameKey) {
+            if (selection.option) optionSet.add(selection.option);
+          }
+        }
+      }
+
+      return {
+        name: name || toDisplayAttributeName(slug),
+        slug,
+        options: Array.from(optionSet),
+      };
+    })
+    .filter((attribute) => attribute.name && attribute.slug);
+
+  if (variationAttributes.length > 0) {
+    return variationAttributes;
+  }
+
+  const derivedAttributes = new Map();
+
+  for (const variation of variations) {
+    for (const selection of variation?.attributeSelections || []) {
+      if (!selection.slug || !selection.name) continue;
+
+      const existing = derivedAttributes.get(selection.slug) || {
+        name: selection.name,
+        slug: selection.slug,
+        options: [],
+      };
+
+      if (selection.option && !existing.options.includes(selection.option)) {
+        existing.options.push(selection.option);
+      }
+
+      derivedAttributes.set(selection.slug, existing);
+    }
+  }
+
+  return Array.from(derivedAttributes.values());
+};
+
+const normalizeVariation = (variation, attributeLookup) => {
+  const normalizedAttributes = normalizeVariationAttributes(variation?.attributes || [], attributeLookup);
+  const stockStatus = variation.stock_status || (variation.in_stock ? 'instock' : 'outofstock');
+
+  return {
+    id: variation.id,
+    sku: variation.sku || '',
+    price: variation.price ?? '',
+    regularPrice: variation.regular_price ?? '',
+    salePrice: variation.sale_price ?? '',
+    inStock: stockStatus === 'instock',
+    stockStatus,
+    stockQuantity: variation.stock_quantity ?? null,
+    image: getImageSrc(variation.image),
+    attributes: normalizedAttributes.attributes,
+    attributeSelections: normalizedAttributes.attributeSelections,
+  };
+};
+
+const getProductVariations = async (productId) => {
+  const variations = [];
+  let page = 1;
+
+  while (true) {
+    const response = await getWcClient().get(`/products/${productId}/variations`, {
+      params: {
+        page,
+        per_page: VARIATIONS_PER_PAGE,
+      },
+    });
+
+    const currentPageVariations = Array.isArray(response.data) ? response.data : [];
+    const totalPages = parseInt(response.headers?.['x-wp-totalpages'] || '0', 10) || 0;
+
+    variations.push(...currentPageVariations);
+
+    if (totalPages > 0) {
+      if (page >= totalPages) break;
+    } else if (currentPageVariations.length < VARIATIONS_PER_PAGE) {
+      break;
+    }
+
+    page += 1;
+  }
+
+  return variations;
 };
 
 // WooCommerce API calls
@@ -134,7 +310,26 @@ export const getFeaturedProducts = async (limit = 10) => {
 export const getProductById = async (productId) => {
   try {
     const response = await getWcClient().get(`/products/${productId}`);
-    return response.data;
+    const product = response.data;
+
+    if (product?.type !== 'variable') {
+      return {
+        ...product,
+        normalizedAttributes: [],
+        normalizedVariations: [],
+      };
+    }
+
+    const attributeLookup = createAttributeLookup(product.attributes || []);
+    const variationResponse = await getProductVariations(productId);
+    const normalizedVariations = variationResponse.map((variation) => normalizeVariation(variation, attributeLookup));
+    const normalizedAttributes = normalizeProductAttributes(product.attributes || [], normalizedVariations);
+
+    return {
+      ...product,
+      normalizedAttributes,
+      normalizedVariations,
+    };
   } catch (error) {
     handleApiError(error, `getProductById(${productId})`);
   }

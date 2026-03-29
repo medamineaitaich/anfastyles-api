@@ -64,8 +64,10 @@ router.get('/:id', async (req, res) => {
 
   logger.info(`Fetching product ${id}`);
 
-  const product = await getProductById(id);
-  const reviews = await getProductReviews(id);
+  const [product, reviews] = await Promise.all([
+    getProductById(id),
+    getProductReviews(id),
+  ]);
 
   res.json({
     id: product.id,
@@ -80,6 +82,8 @@ router.get('/:id', async (req, res) => {
     inStock: product.in_stock,
     stockQuantity: product.stock_quantity,
     sku: product.sku,
+    attributes: product.normalizedAttributes || [],
+    variations: product.normalizedVariations || [],
     reviews: (reviews || []).map((review) => ({
       id: review.id,
       rating: review.rating,
