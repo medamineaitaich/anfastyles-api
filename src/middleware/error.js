@@ -13,7 +13,9 @@ const errorMiddleware = (err, req, res, next) => {
 
   if (res.headersSent) return next(err);
 
-  res.status(status).json({ error: message });
+  const payload = { error: message };
+  if (err?.details) payload.details = err.details;
+  res.status(status).json(payload);
 };
 
 export default errorMiddleware;

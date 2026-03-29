@@ -1,4 +1,5 @@
 import express from 'express';
+import axios from 'axios';
 import logger from '../utils/logger.js';
 import { getStripeClient } from '../utils/stripe.js';
 
@@ -28,6 +29,56 @@ const computeCartItemsMinor = (cartItems = []) => {
 
   return sum;
 };
+
+let cachedStripePublishableKey = null;
+let cachedStripePublishableKeyAtMs = 0;
+
+const getStripePublishableKey = async () => {
+  const direct = process.env.STRIPE_PUBLISHABLE_KEY ? String(process.env.STRIPE_PUBLISHABLE_KEY).trim() : '';
+  if (direct) return direct;
+
+  const storeUrl = process.env.WC_STORE_URL ? String(process.env.WC_STORE_URL).replace(/\/+$/, '') : '';
+  if (!storeUrl) return null;
+
+  const now = Date.now();
+  if (cachedStripePublishableKey && now - cachedStripePublishableKeyAtMs < 60 * 60 * 1000) {
+    return cachedStripePublishableKey;
+  }
+
+  // Scrape the WP checkout page to find the Stripe gateway publishable key (test or live).
+  // This avoids mismatches between headless Stripe.js and the WooCommerce Stripe gateway configuration.
+  const checkoutUrl = `${storeUrl}/checkout/`;
+  const response = await axios.get(checkoutUrl, { timeout: 20000 });
+  const html = String(response?.data || '');
+
+  const match = html.match(/\"stripe\"\s*:\s*\{[^}]*\"publishable_key\"\s*:\s*\"(pk_(?:test|live)_[A-Za-z0-9]+)\"/i);
+  const key = match?.[1] ? String(match[1]).trim() : '';
+  if (!key) return null;
+
+  cachedStripePublishableKey = key;
+  cachedStripePublishableKeyAtMs = now;
+  return key;
+};
+
+// GET /payments/stripe/publishable-key
+// Returns the Stripe publishable key used by the WooCommerce Stripe gateway (test/live).
+router.get('/stripe/publishable-key', async (req, res) => {
+  try {
+    const publishableKey = await getStripePublishableKey();
+    if (!publishableKey) {
+      return res.status(503).json({
+        error: 'Stripe publishable key is not available',
+        requiredEnvVars: ['WC_STORE_URL'],
+        optionalEnvVars: ['STRIPE_PUBLISHABLE_KEY'],
+      });
+    }
+
+    return res.json({ publishableKey });
+  } catch (error) {
+    logger.error('Failed to load Stripe publishable key:', { message: error?.message || String(error) });
+    return res.status(500).json({ error: 'Failed to load Stripe publishable key' });
+  }
+});
 
 // POST /payments/woopayments/intent
 // Minimal PaymentIntent creation for the headless checkout card flow.
@@ -135,4 +186,3 @@ router.post('/woopayments/intent', async (req, res) => {
 });
 
 export default router;
-
