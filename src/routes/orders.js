@@ -5,9 +5,19 @@ import logger from '../utils/logger.js';
 
 const router = express.Router();
 
+const SHIPPING_METHOD_LABELS = {
+  standard: 'Standard shipping',
+  express: 'Express shipping',
+};
+
+const formatAmount = (value) => {
+  const amount = Number(value);
+  return Number.isFinite(amount) ? amount.toFixed(2) : undefined;
+};
+
 // POST /orders/create - Create new order
 router.post('/create', async (req, res) => {
-  const { cartItems, customerInfo, shippingMethod, paymentMethod } = req.body;
+  const { cartItems, customerInfo, shippingMethod, paymentMethod, totals } = req.body;
 
   if (!cartItems || !customerInfo || !shippingMethod || !paymentMethod) {
     return res.status(400).json({ error: 'Missing required order data' });
@@ -21,6 +31,16 @@ router.post('/create', async (req, res) => {
     price: item.price,
   }));
 
+  const zipCode = customerInfo.zipCode || customerInfo.zip || '';
+  const shippingLine = {
+    method_id: shippingMethod,
+    method_title: SHIPPING_METHOD_LABELS[shippingMethod] || shippingMethod,
+  };
+  const shippingTotal = formatAmount(totals?.shippingCost);
+  if (shippingTotal !== undefined) {
+    shippingLine.total = shippingTotal;
+  }
+
   const orderData = {
     customer_id: customerInfo.customerId || 0,
     billing: {
@@ -31,7 +51,7 @@ router.post('/create', async (req, res) => {
       address_1: customerInfo.address,
       city: customerInfo.city,
       state: customerInfo.state,
-      postcode: customerInfo.zipCode,
+      postcode: zipCode,
       country: customerInfo.country || 'US',
     },
     shipping: {
@@ -40,16 +60,11 @@ router.post('/create', async (req, res) => {
       address_1: customerInfo.address,
       city: customerInfo.city,
       state: customerInfo.state,
-      postcode: customerInfo.zipCode,
+      postcode: zipCode,
       country: customerInfo.country || 'US',
     },
     line_items: lineItems,
-    shipping_lines: [
-      {
-        method_id: shippingMethod,
-        method_title: shippingMethod,
-      },
-    ],
+    shipping_lines: [shippingLine],
     payment_method: paymentMethod,
     payment_method_title: paymentMethod,
     status: 'pending',

@@ -64,6 +64,33 @@ router.post('/cart/update-customer', async (req, res) => {
   }
 });
 
+// POST /store/cart/select-shipping-rate - Select one calculated shipping rate for a package
+router.post('/cart/select-shipping-rate', async (req, res) => {
+  try {
+    const headers = {
+      ...forwardStoreSessionHeaders(req),
+      'Content-Type': 'application/json',
+    };
+
+    const { package_id, rate_id } = req.body || {};
+    const response = await getStoreClient().post(
+      '/cart/select-shipping-rate',
+      { package_id, rate_id },
+      {
+        headers,
+        params: { package_id, rate_id },
+      }
+    );
+
+    return res.status(response.status).json({
+      data: response.data,
+      store: getStoreSessionFromHeaders(response.headers),
+    });
+  } catch (error) {
+    handleStoreApiError(error, 'POST /store/cart/select-shipping-rate');
+  }
+});
+
 // GET /store/products/:id - Store API product (includes variations list)
 router.get('/products/:id', async (req, res) => {
   try {
