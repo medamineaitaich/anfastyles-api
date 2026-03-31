@@ -510,6 +510,15 @@ export const createWooCommerceOrder = async (orderData) => {
   }
 };
 
+export const updateWooCommerceOrder = async (orderId, orderData) => {
+  try {
+    const response = await getWcClient().put(`/orders/${orderId}`, orderData);
+    return response.data;
+  } catch (error) {
+    handleApiError(error, `updateWooCommerceOrder(${orderId})`);
+  }
+};
+
 export const getWooCommerceOrder = async (orderId) => {
   try {
     const response = await getWcClient().get(`/orders/${orderId}`);
@@ -599,6 +608,7 @@ export default {
   createWooCommerceCustomer,
   getWooCommerceCustomerByEmail,
   createWooCommerceOrder,
+  updateWooCommerceOrder,
   getWooCommerceOrder,
   getWooCommerceOrdersByCustomer,
   getWordPressUsers,

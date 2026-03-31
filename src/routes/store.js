@@ -1,5 +1,7 @@
 import express from 'express';
 import logger from '../utils/logger.js';
+import { getSession } from '../utils/sessionManager.js';
+import { updateWooCommerceOrder } from '../utils/woocommerce.js';
 import {
   getStoreClient,
   getStoreSessionFromHeaders,
@@ -8,6 +10,39 @@ import {
 } from '../utils/storeApi.js';
 
 const router = express.Router();
+
+const getAuthenticatedCustomerId = (req) => {
+  const sessionId = req.cookies?.sessionId;
+  const session = sessionId ? getSession(sessionId) : null;
+  const customerId = Number(session?.userId);
+  return Number.isFinite(customerId) && customerId > 0 ? customerId : 0;
+};
+
+const syncCheckoutOrderOwnership = async (req, checkoutData) => {
+  const customerId = getAuthenticatedCustomerId(req);
+  if (!customerId) {
+    return checkoutData;
+  }
+
+  const orderId = Number(checkoutData?.order_id || checkoutData?.id);
+  if (!Number.isFinite(orderId) || orderId <= 0) {
+    return checkoutData;
+  }
+
+  const currentCustomerId = Number(checkoutData?.customer_id);
+  if (currentCustomerId === customerId) {
+    return checkoutData;
+  }
+
+  await updateWooCommerceOrder(orderId, { customer_id: customerId });
+
+  logger.info(`Linked checkout order ${orderId} to authenticated customer ${customerId}`);
+
+  return {
+    ...checkoutData,
+    customer_id: customerId,
+  };
+};
 
 // GET /store/cart - Get cart data + session headers (nonce/cart-token)
 router.get('/cart', async (req, res) => {
@@ -107,9 +142,10 @@ router.get('/checkout', async (req, res) => {
   try {
     const headers = forwardStoreSessionHeaders(req);
     const response = await getStoreClient().get('/checkout', { headers });
+    const checkoutData = await syncCheckoutOrderOwnership(req, response.data);
 
     return res.json({
-      data: response.data,
+      data: checkoutData,
       store: getStoreSessionFromHeaders(response.headers),
     });
   } catch (error) {
@@ -128,9 +164,10 @@ router.post('/checkout', async (req, res) => {
     logger.info('Store checkout attempt');
 
     const response = await getStoreClient().post('/checkout', req.body || {}, { headers });
+    const checkoutData = await syncCheckoutOrderOwnership(req, response.data);
 
     return res.status(response.status).json({
-      data: response.data,
+      data: checkoutData,
       store: getStoreSessionFromHeaders(response.headers),
     });
   } catch (error) {
