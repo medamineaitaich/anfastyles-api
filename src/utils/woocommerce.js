@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import axios from 'axios';
+import crypto from 'node:crypto';
 import logger from './logger.js';
 
 // Validate credentials on startup
@@ -25,6 +26,7 @@ let wpClient = null;
 const productCategoryCache = new Map();
 
 const VARIATIONS_PER_PAGE = 100;
+const MAX_WP_USERNAME_LENGTH = 60;
 
 // Create clients lazily so startup failures point at missing env vars clearly.
 const getWcClient = () => {
@@ -71,6 +73,40 @@ const handleApiError = (error, context) => {
 const getImageSrc = (image) => {
   if (typeof image === 'string') return image || null;
   return image?.src || null;
+};
+
+const normalizeEmailAddress = (value) => String(value || '').trim().toLowerCase();
+
+const sanitizeWooCommerceUsernamePart = (value) => String(value || '')
+  .normalize('NFKD')
+  .replace(/[^\x00-\x7F]/g, '')
+  .toLowerCase()
+  .replace(/[^a-z0-9._-]+/g, '-')
+  .replace(/[-._]{2,}/g, '-')
+  .replace(/^[-._]+|[-._]+$/g, '');
+
+export const buildWooCommerceUsername = (email) => {
+  const normalizedEmail = normalizeEmailAddress(email);
+  const [rawLocalPart = 'customer'] = normalizedEmail.split('@');
+  const baseUsername = sanitizeWooCommerceUsernamePart(rawLocalPart) || 'customer';
+  const uniqueSuffix = crypto
+    .createHash('sha256')
+    .update(normalizedEmail)
+    .digest('hex')
+    .slice(0, 8);
+  const maxBaseLength = Math.max(1, MAX_WP_USERNAME_LENGTH - uniqueSuffix.length - 1);
+  const truncatedBase = baseUsername.slice(0, maxBaseLength) || 'customer';
+
+  return `${truncatedBase}-${uniqueSuffix}`;
+};
+
+const isWooCommerceUsernameConflict = (error) => {
+  const message = String(error?.response?.data?.message || error?.message || '').toLowerCase();
+  return message.includes('username') && (
+    message.includes('already registered')
+    || message.includes('already exists')
+    || message.includes('please choose another')
+  );
 };
 
 const normalizeCategoryFilterValue = (value) => String(value || '')
@@ -421,16 +457,28 @@ export const getProductReviews = async (productId) => {
 };
 
 export const createWooCommerceCustomer = async (customerData) => {
+  const normalizedEmail = normalizeEmailAddress(customerData?.email);
+
   try {
     const response = await getWcClient().post('/customers', {
-      email: customerData.email,
+      email: normalizedEmail,
       first_name: customerData.firstName || '',
       last_name: customerData.lastName || '',
-      username: customerData.email.split('@')[0],
+      username: buildWooCommerceUsername(normalizedEmail),
       password: customerData.password,
+      ...(customerData.billing ? { billing: customerData.billing } : {}),
+      ...(customerData.shipping ? { shipping: customerData.shipping } : {}),
     });
     return response.data;
   } catch (error) {
+    if (isWooCommerceUsernameConflict(error)) {
+      const conflictError = new Error('We could not create this account because the generated username is already taken. Please try again.');
+      conflictError.statusCode = 409;
+      conflictError.code = 'username_conflict';
+      conflictError.details = error?.response?.data || null;
+      throw conflictError;
+    }
+
     handleApiError(error, 'createWooCommerceCustomer');
   }
 };
@@ -547,6 +595,7 @@ export default {
   getFeaturedProducts,
   getProductById,
   getProductReviews,
+  buildWooCommerceUsername,
   createWooCommerceCustomer,
   getWooCommerceCustomerByEmail,
   createWooCommerceOrder,

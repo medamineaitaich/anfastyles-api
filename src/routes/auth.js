@@ -108,6 +108,24 @@ const buildCheckoutRegistrationResponse = (customer, emailOverride) => {
   };
 };
 
+const isCustomerCreationConflict = (error) => {
+  if (Number(error?.statusCode) === 409) return true;
+
+  const message = String(error?.message || '').toLowerCase();
+  return message.includes('already exists')
+    || message.includes('already registered')
+    || message.includes('please choose another')
+    || message.includes('username is already taken');
+};
+
+const getCustomerCreationConflictMessage = (error) => {
+  if (error?.code === 'username_conflict') {
+    return 'We could not create your account because that username is already taken. Please try again.';
+  }
+
+  return 'An account already exists for this email';
+};
+
 // POST /auth/login - Login with email and password
 router.post('/login', async (req, res, next) => {
   const { email, password } = req.body;
@@ -146,7 +164,7 @@ router.post('/login', async (req, res, next) => {
 });
 
 // POST /auth/register - Register new customer
-router.post('/register', async (req, res) => {
+router.post('/register', async (req, res, next) => {
   const { name, email, password } = req.body;
 
   if (!name || !email || !password) {
@@ -167,22 +185,30 @@ router.post('/register', async (req, res) => {
     return res.status(409).json({ error: 'An account already exists for this email' });
   }
 
-  // Create WooCommerce customer
   const [firstName, ...lastNameParts] = name.split(' ');
   const lastName = lastNameParts.join(' ');
 
-  const customer = await createWooCommerceCustomer({
-    firstName,
-    lastName,
-    email: normalizedEmail,
-    password,
-  });
+  try {
+    const customer = await createWooCommerceCustomer({
+      firstName,
+      lastName,
+      email: normalizedEmail,
+      password,
+    });
 
-  logger.info(`Customer created: ${normalizedEmail}`);
+    logger.info(`Customer created: ${normalizedEmail}`);
 
-  const sessionUser = createAuthenticatedSession(res, customer, normalizedEmail);
+    const sessionUser = createAuthenticatedSession(res, customer, normalizedEmail);
 
-  res.json(sessionUser);
+    return res.json(sessionUser);
+  } catch (error) {
+    if (isCustomerCreationConflict(error)) {
+      logger.warn(`Registration conflict from WooCommerce: ${normalizedEmail}`);
+      return res.status(409).json({ error: getCustomerCreationConflictMessage(error) });
+    }
+
+    return next(error);
+  }
 });
 
 // POST /auth/register-checkout - Create a customer account from checkout data
@@ -239,9 +265,9 @@ router.post('/register-checkout', async (req, res, next) => {
 
     return res.json(buildCheckoutRegistrationResponse(customer, email));
   } catch (error) {
-    if (/already exists/i.test(String(error?.message || ''))) {
+    if (isCustomerCreationConflict(error)) {
       logger.warn(`Checkout account creation conflict from WooCommerce: ${email}`);
-      return res.status(409).json({ error: 'An account already exists for this email' });
+      return res.status(409).json({ error: getCustomerCreationConflictMessage(error) });
     }
 
     return next(error);
