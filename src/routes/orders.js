@@ -1,6 +1,7 @@
 import express from 'express';
 import { createWooCommerceOrder, getWooCommerceOrder, getWooCommerceOrdersByCustomer } from '../utils/woocommerce.js';
 import { requireAuth } from '../middleware/auth.js';
+import { getSession } from '../utils/sessionManager.js';
 import logger from '../utils/logger.js';
 
 const router = express.Router();
@@ -15,6 +16,20 @@ const formatAmount = (value) => {
   return Number.isFinite(amount) ? amount.toFixed(2) : undefined;
 };
 
+export const resolveOrderCustomerId = ({ sessionUserId, fallbackCustomerId }) => {
+  const authenticatedCustomerId = Number(sessionUserId);
+  if (Number.isFinite(authenticatedCustomerId) && authenticatedCustomerId > 0) {
+    return authenticatedCustomerId;
+  }
+
+  const providedCustomerId = Number(fallbackCustomerId);
+  if (Number.isFinite(providedCustomerId) && providedCustomerId > 0) {
+    return providedCustomerId;
+  }
+
+  return 0;
+};
+
 // POST /orders/create - Create new order
 router.post('/create', async (req, res) => {
   const { cartItems, customerInfo, shippingMethod, paymentMethod, totals } = req.body;
@@ -24,6 +39,13 @@ router.post('/create', async (req, res) => {
   }
 
   logger.info(`Creating order for customer: ${customerInfo.email}`);
+
+  const sessionId = req.cookies?.sessionId;
+  const session = sessionId ? getSession(sessionId) : null;
+  const customerId = resolveOrderCustomerId({
+    sessionUserId: session?.userId,
+    fallbackCustomerId: customerInfo.customerId,
+  });
 
   const lineItems = cartItems.map((item) => ({
     product_id: item.productId,
@@ -42,7 +64,7 @@ router.post('/create', async (req, res) => {
   }
 
   const orderData = {
-    customer_id: customerInfo.customerId || 0,
+    customer_id: customerId,
     billing: {
       first_name: customerInfo.firstName,
       last_name: customerInfo.lastName,
