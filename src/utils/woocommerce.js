@@ -501,6 +501,29 @@ export const getWooCommerceCustomerByEmail = async (email) => {
   }
 };
 
+export const updateWooCommerceCustomer = async (customerId, customerData = {}) => {
+  try {
+    const normalizedCustomerId = Number.parseInt(customerId, 10);
+    if (!Number.isInteger(normalizedCustomerId) || normalizedCustomerId <= 0) {
+      throw new Error('A valid WooCommerce customer id is required');
+    }
+
+    const payload = {};
+
+    if (customerData.email !== undefined) payload.email = normalizeEmailAddress(customerData.email);
+    if (customerData.firstName !== undefined) payload.first_name = customerData.firstName || '';
+    if (customerData.lastName !== undefined) payload.last_name = customerData.lastName || '';
+    if (customerData.password !== undefined) payload.password = String(customerData.password || '');
+    if (customerData.billing) payload.billing = customerData.billing;
+    if (customerData.shipping) payload.shipping = customerData.shipping;
+
+    const response = await getWcClient().put(`/customers/${normalizedCustomerId}`, payload);
+    return response.data;
+  } catch (error) {
+    handleApiError(error, `updateWooCommerceCustomer(${customerId})`);
+  }
+};
+
 export const createWooCommerceOrder = async (orderData) => {
   try {
     const response = await getWcClient().post('/orders', orderData);
@@ -607,6 +630,7 @@ export default {
   buildWooCommerceUsername,
   createWooCommerceCustomer,
   getWooCommerceCustomerByEmail,
+  updateWooCommerceCustomer,
   createWooCommerceOrder,
   updateWooCommerceOrder,
   getWooCommerceOrder,

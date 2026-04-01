@@ -1,6 +1,8 @@
 import express from 'express';
-import { createWooCommerceCustomer, getWooCommerceCustomerByEmail, verifyWordPressUser } from '../utils/woocommerce.js';
+import { createWooCommerceCustomer, getWooCommerceCustomerByEmail, updateWooCommerceCustomer, verifyWordPressUser } from '../utils/woocommerce.js';
 import { createSession, getSession, deleteSession } from '../utils/sessionManager.js';
+import { sendPasswordResetEmail } from '../utils/mailer.js';
+import { issuePasswordResetToken, consumePasswordResetToken } from '../utils/passwordResetTokens.js';
 import { requireAuth } from '../middleware/auth.js';
 import logger from '../utils/logger.js';
 
@@ -124,6 +126,32 @@ const getCustomerCreationConflictMessage = (error) => {
   }
 
   return 'An account already exists for this email';
+};
+
+const FORGOT_PASSWORD_SUCCESS_RESPONSE = {
+  success: true,
+  message: 'If an account exists for that email, a reset link has been sent.',
+};
+
+const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(email));
+
+const getPasswordResetBaseUrl = () => {
+  const configuredUrl = normalizeText(process.env.PASSWORD_RESET_URL);
+  if (configuredUrl) return configuredUrl;
+
+  const frontendBaseUrl = normalizeText(process.env.FRONTEND_URL || 'https://anfastyles.shop').replace(/\/+$/, '');
+  return `${frontendBaseUrl}/reset-password`;
+};
+
+const buildPasswordResetUrl = (token) => {
+  const resetUrl = new URL(getPasswordResetBaseUrl());
+  resetUrl.searchParams.set('token', token);
+  return resetUrl.toString();
+};
+
+const getCustomerDisplayName = (customer, email) => {
+  const name = `${customer?.first_name || ''} ${customer?.last_name || ''}`.trim();
+  return name || normalizeEmail(email);
 };
 
 // POST /auth/login - Login with email and password
@@ -270,6 +298,82 @@ router.post('/register-checkout', async (req, res, next) => {
       return res.status(409).json({ error: getCustomerCreationConflictMessage(error) });
     }
 
+    return next(error);
+  }
+});
+
+// POST /auth/forgot-password - Send password reset link by email
+router.post('/forgot-password', async (req, res, next) => {
+  const normalizedEmail = normalizeEmail(req.body?.email);
+
+  if (!normalizedEmail) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
+
+  if (!isValidEmail(normalizedEmail)) {
+    return res.status(400).json({ error: 'Enter a valid email address' });
+  }
+
+  logger.info(`Password reset requested for email: ${normalizedEmail}`);
+
+  try {
+    const customer = await getWooCommerceCustomerByEmail(normalizedEmail);
+    if (!customer?.id) {
+      logger.info(`Password reset requested for unknown email: ${normalizedEmail}`);
+      return res.json(FORGOT_PASSWORD_SUCCESS_RESPONSE);
+    }
+
+    const { token, expiresInMinutes } = issuePasswordResetToken({
+      customerId: customer.id,
+      email: normalizedEmail,
+    });
+
+    await sendPasswordResetEmail({
+      to: normalizedEmail,
+      name: getCustomerDisplayName(customer, normalizedEmail),
+      resetUrl: buildPasswordResetUrl(token),
+      expiresInMinutes,
+    });
+
+    logger.info(`Password reset email queued for customer: ${normalizedEmail}`);
+    return res.json(FORGOT_PASSWORD_SUCCESS_RESPONSE);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// POST /auth/reset-password - Validate reset token and set a new password
+router.post('/reset-password', async (req, res, next) => {
+  const token = normalizeText(req.body?.token);
+  const newPassword = String(req.body?.newPassword ?? req.body?.password ?? '');
+  const confirmPassword = String(req.body?.confirmPassword ?? req.body?.confirm_password ?? '');
+
+  if (!token) {
+    return res.status(400).json({ error: 'Reset token is required' });
+  }
+
+  const passwordError = validatePassword(newPassword, confirmPassword);
+  if (passwordError) {
+    return res.status(400).json({ error: passwordError });
+  }
+
+  const tokenData = consumePasswordResetToken(token);
+  if (!tokenData?.customerId) {
+    return res.status(400).json({ error: 'Invalid or expired reset token' });
+  }
+
+  logger.info(`Completing password reset for customer ${tokenData.customerId}`);
+
+  try {
+    await updateWooCommerceCustomer(tokenData.customerId, {
+      password: newPassword,
+    });
+
+    return res.json({
+      success: true,
+      message: 'Your password has been reset successfully.',
+    });
+  } catch (error) {
     return next(error);
   }
 });
