@@ -501,6 +501,20 @@ export const getWooCommerceCustomerByEmail = async (email) => {
   }
 };
 
+export const getWooCommerceCustomerById = async (customerId) => {
+  try {
+    const normalizedCustomerId = Number.parseInt(customerId, 10);
+    if (!Number.isInteger(normalizedCustomerId) || normalizedCustomerId <= 0) {
+      throw new Error('A valid WooCommerce customer id is required');
+    }
+
+    const response = await getWcClient().get(`/customers/${normalizedCustomerId}`);
+    return response.data;
+  } catch (error) {
+    handleApiError(error, `getWooCommerceCustomerById(${customerId})`);
+  }
+};
+
 export const updateWooCommerceCustomer = async (customerId, customerData = {}) => {
   try {
     const normalizedCustomerId = Number.parseInt(customerId, 10);

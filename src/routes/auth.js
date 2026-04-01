@@ -1,5 +1,5 @@
 import express from 'express';
-import { createWooCommerceCustomer, getWooCommerceCustomerByEmail, updateWooCommerceCustomer, verifyWordPressUser } from '../utils/woocommerce.js';
+import { createWooCommerceCustomer, getWooCommerceCustomerByEmail, getWooCommerceCustomerById, updateWooCommerceCustomer, verifyWordPressUser } from '../utils/woocommerce.js';
 import { createSession, getSession, deleteSession } from '../utils/sessionManager.js';
 import { sendPasswordResetEmail } from '../utils/mailer.js';
 import { issuePasswordResetToken, consumePasswordResetToken } from '../utils/passwordResetTokens.js';
@@ -413,6 +413,173 @@ router.get('/verify', (req, res) => {
     email: session.email,
     name: session.name,
   });
+});
+
+// GET /auth/me-profile - return authenticated user profile data
+router.get('/me-profile', requireAuth, async (req, res, next) => {
+  try {
+    const customer = await getWooCommerceCustomerById(req.session.userId);
+
+    if (!customer) {
+      return res.status(404).json({ error: 'Profile not found' });
+    }
+
+    res.json({
+      authenticated: true,
+      userId: customer.id,
+      email: normalizeEmail(customer.email),
+      firstName: customer.first_name || '',
+      lastName: customer.last_name || '',
+      billing: customer.billing || {},
+      shipping: customer.shipping || {},
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// PUT /auth/update-profile - update account/profile fields
+router.put('/update-profile', requireAuth, async (req, res, next) => {
+  try {
+    const userId = req.session.userId;
+    const existingCustomer = await getWooCommerceCustomerById(userId);
+
+    if (!existingCustomer) {
+      return res.status(404).json({ error: 'Profile not found' });
+    }
+
+    const {
+      firstName,
+      lastName,
+      email,
+      phone,
+      billing,
+      shipping,
+      name,
+    } = req.body || {};
+
+    if (!firstName && !lastName && !email && !phone && !billing && !shipping && !name) {
+      return res.status(400).json({ error: 'No profile fields provided to update' });
+    }
+
+    const normalizedEmail = email ? normalizeEmail(email) : undefined;
+
+    if (normalizedEmail && normalizedEmail !== normalizeEmail(existingCustomer.email)) {
+      if (!isValidEmail(normalizedEmail)) {
+        return res.status(400).json({ error: 'Enter a valid email address' });
+      }
+
+      const existingForEmail = await getWooCommerceCustomerByEmail(normalizedEmail);
+      if (existingForEmail && Number(existingForEmail.id) !== Number(userId)) {
+        return res.status(409).json({ error: 'Email is already in use' });
+      }
+    }
+
+    const updateData = {};
+
+    if (firstName !== undefined) updateData.firstName = normalizeText(firstName);
+    if (lastName !== undefined) updateData.lastName = normalizeText(lastName);
+    if (name !== undefined) {
+      const { firstName: nFirst, lastName: nLast } = splitName(name);
+      if (nFirst) updateData.firstName = nFirst;
+      if (nLast) updateData.lastName = nLast;
+    }
+    if (normalizedEmail !== undefined) updateData.email = normalizedEmail;
+
+    const existingBilling = existingCustomer.billing || {};
+    const existingShipping = existingCustomer.shipping || {};
+
+    if (phone !== undefined) {
+      updateData.billing = {
+        ...existingBilling,
+        phone: normalizeText(phone),
+      };
+    }
+
+    if (billing) {
+      updateData.billing = {
+        ...existingBilling,
+        ...toCheckoutAddress(billing),
+      };
+    }
+
+    if (shipping) {
+      updateData.shipping = {
+        ...existingShipping,
+        ...toCheckoutAddress(shipping),
+      };
+    }
+
+    const updatedCustomer = await updateWooCommerceCustomer(userId, updateData);
+
+    if (updatedCustomer) {
+      const sessionId = req.cookies?.sessionId;
+      if (sessionId) {
+        const session = getSession(sessionId);
+        if (session) {
+          session.email = normalizeEmail(updatedCustomer.email || session.email);
+          session.name = `${updatedCustomer.first_name || ''} ${updatedCustomer.last_name || ''}`.trim() || session.name;
+        }
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: 'Profile updated successfully',
+      user: {
+        userId: updatedCustomer.id,
+        email: normalizeEmail(updatedCustomer.email),
+        firstName: updatedCustomer.first_name || '',
+        lastName: updatedCustomer.last_name || '',
+        billing: updatedCustomer.billing || {},
+        shipping: updatedCustomer.shipping || {},
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// POST /auth/change-password - update password with current password verification
+router.post('/change-password', requireAuth, async (req, res, next) => {
+  try {
+    const userId = req.session.userId;
+    const existingCustomer = await getWooCommerceCustomerById(userId);
+
+    if (!existingCustomer) {
+      return res.status(404).json({ error: 'Profile not found' });
+    }
+
+    const currentPassword = String(req.body?.currentPassword || req.body?.oldPassword || '');
+    const newPassword = String(req.body?.newPassword || req.body?.password || '');
+    const confirmPassword = String(req.body?.confirmPassword || req.body?.confirm_password || '');
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current password and new password are required' });
+    }
+
+    const passwordError = validatePassword(newPassword, confirmPassword);
+    if (passwordError) {
+      return res.status(400).json({ error: passwordError });
+    }
+
+    const wpLogin = String(existingCustomer.username || existingCustomer.email || req.session.email).trim();
+
+    try {
+      await verifyWordPressUser(wpLogin, currentPassword);
+    } catch (e) {
+      return res.status(403).json({ error: 'Current password is incorrect' });
+    }
+
+    await updateWooCommerceCustomer(userId, { password: newPassword });
+
+    return res.json({
+      success: true,
+      message: 'Password changed successfully',
+    });
+  } catch (error) {
+    return next(error);
+  }
 });
 
 export default router;
