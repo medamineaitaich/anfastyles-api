@@ -510,6 +510,13 @@ router.put('/update-profile', requireAuth, async (req, res, next) => {
       };
     }
 
+    if (normalizedEmail !== undefined) {
+      updateData.billing = {
+        ...(updateData.billing || existingBilling),
+        email: normalizedEmail,
+      };
+    }
+
     const updatedCustomer = await updateWooCommerceCustomer(userId, updateData);
 
     if (updatedCustomer) {
@@ -536,6 +543,16 @@ router.put('/update-profile', requireAuth, async (req, res, next) => {
       },
     });
   } catch (error) {
+    const message = String(error?.message || '');
+
+    if (message.includes('Email address is invalid')) {
+      return res.status(400).json({ error: 'Enter a valid email address' });
+    }
+
+    if (message.toLowerCase().includes('already exists')) {
+      return res.status(409).json({ error: 'Email is already in use' });
+    }
+
     return next(error);
   }
 });
