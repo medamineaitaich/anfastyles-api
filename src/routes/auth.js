@@ -6,6 +6,108 @@ import logger from '../utils/logger.js';
 
 const router = express.Router();
 
+const COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'strict',
+  maxAge: 24 * 60 * 60 * 1000,
+};
+
+const normalizeText = (value) => String(value || '').trim();
+const normalizeEmail = (value) => normalizeText(value).toLowerCase();
+
+const splitName = (name) => {
+  const parts = normalizeText(name).split(/\s+/).filter(Boolean);
+  return {
+    firstName: parts[0] || '',
+    lastName: parts.slice(1).join(' '),
+  };
+};
+
+const toCheckoutAddress = (source = {}) => ({
+  first_name: normalizeText(source.first_name ?? source.firstName),
+  last_name: normalizeText(source.last_name ?? source.lastName),
+  company: normalizeText(source.company),
+  address_1: normalizeText(source.address_1 ?? source.address1 ?? source.address),
+  address_2: normalizeText(source.address_2 ?? source.address2),
+  city: normalizeText(source.city),
+  state: normalizeText(source.state),
+  postcode: normalizeText(source.postcode ?? source.zip),
+  country: normalizeText(source.country) || 'US',
+  email: normalizeEmail(source.email),
+  phone: normalizeText(source.phone),
+});
+
+const extractCheckoutRegistrationPayload = (body = {}) => {
+  const billingSource = body.billing_address || body.billingAddress || body.billing || body.customerInfo || {};
+  const shippingSource = body.shipping_address || body.shippingAddress || body.shipping || {};
+  const rawName = normalizeText(body.name);
+  const billingEmail = normalizeEmail(body.email || billingSource.email);
+  const nameParts = splitName(rawName);
+  const billingAddress = toCheckoutAddress({
+    ...billingSource,
+    first_name: billingSource.first_name ?? billingSource.firstName ?? nameParts.firstName,
+    last_name: billingSource.last_name ?? billingSource.lastName ?? nameParts.lastName,
+    email: billingEmail || billingSource.email,
+    phone: body.phone || billingSource.phone,
+  });
+  const shippingAddress = toCheckoutAddress(
+    Object.keys(shippingSource).length > 0 ? shippingSource : billingAddress
+  );
+  const fullName = `${billingAddress.first_name} ${billingAddress.last_name}`.trim();
+
+  return {
+    email: billingEmail,
+    password: String(body.password || ''),
+    confirmPassword: String(body.confirmPassword || body.confirm_password || ''),
+    billingAddress,
+    shippingAddress,
+    name: fullName || rawName,
+    firstName: billingAddress.first_name || nameParts.firstName,
+    lastName: billingAddress.last_name || nameParts.lastName,
+  };
+};
+
+const validatePassword = (password, confirmPassword) => {
+  if (!password) return 'Password is required';
+  if (password.length < 8) return 'Password must be at least 8 characters';
+  if (confirmPassword !== undefined && password !== confirmPassword) return 'Passwords do not match';
+  return null;
+};
+
+const createAuthenticatedSession = (res, customer, emailOverride) => {
+  const normalizedEmail = normalizeEmail(customer?.email || emailOverride);
+  const name = `${customer?.first_name || ''} ${customer?.last_name || ''}`.trim() || normalizedEmail;
+  const sessionId = createSession(customer.id, {
+    email: normalizedEmail,
+    name,
+  });
+
+  res.cookie('sessionId', sessionId, COOKIE_OPTIONS);
+
+  return {
+    userId: customer.id,
+    email: normalizedEmail,
+    name,
+  };
+};
+
+const buildCheckoutRegistrationResponse = (customer, emailOverride) => {
+  const normalizedEmail = normalizeEmail(customer?.email || emailOverride);
+  const name = `${customer?.first_name || ''} ${customer?.last_name || ''}`.trim() || normalizedEmail;
+
+  return {
+    authenticated: true,
+    created: true,
+    userId: customer.id,
+    customerId: customer.id,
+    email: normalizedEmail,
+    name,
+    billing: customer?.billing || {},
+    shipping: customer?.shipping || {},
+  };
+};
+
 // POST /auth/login - Login with email and password
 router.post('/login', async (req, res, next) => {
   const { email, password } = req.body;
@@ -28,26 +130,11 @@ router.post('/login', async (req, res, next) => {
     const wpLogin = String(customer?.username || customer?.email || normalizedEmail).trim();
     await verifyWordPressUser(wpLogin, password);
 
-    const name = `${customer.first_name || ''} ${customer.last_name || ''}`.trim() || customer.email || normalizedEmail;
-    const sessionId = createSession(customer.id, {
-      email: customer.email || normalizedEmail,
-      name,
-    });
+    const sessionUser = createAuthenticatedSession(res, customer, normalizedEmail);
 
     logger.info(`Login successful for user: ${normalizedEmail}`);
 
-    res.cookie('sessionId', sessionId, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours
-    });
-
-    return res.json({
-      userId: customer.id,
-      email: customer.email || normalizedEmail,
-      name,
-    });
+    return res.json(sessionUser);
   } catch (error) {
     if (error?.message === 'Invalid credentials') {
       logger.warn(`Login failed - invalid credentials: ${normalizedEmail}`);
@@ -66,7 +153,19 @@ router.post('/register', async (req, res) => {
     return res.status(400).json({ error: 'Name, email, and password are required' });
   }
 
-  logger.info(`Registration attempt for email: ${email}`);
+  const normalizedEmail = normalizeEmail(email);
+  logger.info(`Registration attempt for email: ${normalizedEmail}`);
+
+  const passwordError = validatePassword(password);
+  if (passwordError) {
+    return res.status(400).json({ error: passwordError });
+  }
+
+  const existingCustomer = await getWooCommerceCustomerByEmail(normalizedEmail);
+  if (existingCustomer) {
+    logger.warn(`Registration blocked - duplicate email: ${normalizedEmail}`);
+    return res.status(409).json({ error: 'An account already exists for this email' });
+  }
 
   // Create WooCommerce customer
   const [firstName, ...lastNameParts] = name.split(' ');
@@ -75,30 +174,78 @@ router.post('/register', async (req, res) => {
   const customer = await createWooCommerceCustomer({
     firstName,
     lastName,
-    email,
+    email: normalizedEmail,
     password,
   });
 
-  logger.info(`Customer created: ${email}`);
+  logger.info(`Customer created: ${normalizedEmail}`);
 
-  // Auto-login
-  const sessionId = createSession(customer.id, {
-    email: customer.email,
-    name: customer.first_name + ' ' + customer.last_name,
-  });
+  const sessionUser = createAuthenticatedSession(res, customer, normalizedEmail);
 
-  res.cookie('sessionId', sessionId, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
-    maxAge: 24 * 60 * 60 * 1000,
-  });
+  res.json(sessionUser);
+});
 
-  res.json({
-    userId: customer.id,
-    email: customer.email,
-    name: customer.first_name + ' ' + customer.last_name,
-  });
+// POST /auth/register-checkout - Create a customer account from checkout data
+router.post('/register-checkout', async (req, res, next) => {
+  const checkoutRegistration = extractCheckoutRegistrationPayload(req.body);
+  const {
+    email,
+    password,
+    confirmPassword,
+    billingAddress,
+    shippingAddress,
+    firstName,
+    lastName,
+  } = checkoutRegistration;
+
+  if (!email) {
+    return res.status(400).json({ error: 'Billing email is required' });
+  }
+
+  if (!firstName || !lastName) {
+    return res.status(400).json({ error: 'Billing first and last name are required' });
+  }
+
+  if (!billingAddress.address_1 || !billingAddress.city || !billingAddress.state || !billingAddress.postcode) {
+    return res.status(400).json({ error: 'A complete billing address is required' });
+  }
+
+  const passwordError = validatePassword(password, confirmPassword);
+  if (passwordError) {
+    return res.status(400).json({ error: passwordError });
+  }
+
+  logger.info(`Checkout account creation attempt for email: ${email}`);
+
+  try {
+    const existingCustomer = await getWooCommerceCustomerByEmail(email);
+    if (existingCustomer) {
+      logger.warn(`Checkout account creation blocked - duplicate email: ${email}`);
+      return res.status(409).json({ error: 'An account already exists for this email' });
+    }
+
+    const customer = await createWooCommerceCustomer({
+      firstName,
+      lastName,
+      email,
+      password,
+      billing: billingAddress,
+      shipping: shippingAddress,
+    });
+
+    createAuthenticatedSession(res, customer, email);
+
+    logger.info(`Checkout account created: ${email}`);
+
+    return res.json(buildCheckoutRegistrationResponse(customer, email));
+  } catch (error) {
+    if (/already exists/i.test(String(error?.message || ''))) {
+      logger.warn(`Checkout account creation conflict from WooCommerce: ${email}`);
+      return res.status(409).json({ error: 'An account already exists for this email' });
+    }
+
+    return next(error);
+  }
 });
 
 // POST /auth/logout - Logout and clear session
