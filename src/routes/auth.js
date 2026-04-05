@@ -1,5 +1,5 @@
 import express from 'express';
-import { createWooCommerceCustomer, getWooCommerceCustomerByEmail, getWooCommerceCustomerById, triggerWordPressPasswordReset, updateWooCommerceCustomer, verifyWordPressUser } from '../utils/woocommerce.js';
+import { createWooCommerceCustomer, getWooCommerceCustomerByEmail, getWooCommerceCustomerById, resetWordPressPassword, triggerWordPressPasswordReset, updateWooCommerceCustomer, verifyWordPressUser } from '../utils/woocommerce.js';
 import { createSession, getSession, deleteSession } from '../utils/sessionManager.js';
 import { consumePasswordResetToken } from '../utils/passwordResetTokens.js';
 import { requireAuth } from '../middleware/auth.js';
@@ -315,16 +315,38 @@ router.post('/forgot-password', async (req, res, next) => {
 // POST /auth/reset-password - Validate reset token and set a new password
 router.post('/reset-password', async (req, res, next) => {
   const token = normalizeText(req.body?.token);
+  const resetKey = normalizeText(req.body?.key);
+  const resetLogin = normalizeText(req.body?.login);
   const newPassword = String(req.body?.newPassword ?? req.body?.password ?? '');
   const confirmPassword = String(req.body?.confirmPassword ?? req.body?.confirm_password ?? '');
-
-  if (!token) {
-    return res.status(400).json({ error: 'Reset token is required' });
-  }
 
   const passwordError = validatePassword(newPassword, confirmPassword);
   if (passwordError) {
     return res.status(400).json({ error: passwordError });
+  }
+
+  if (resetKey && resetLogin) {
+    try {
+      await resetWordPressPassword({
+        key: resetKey,
+        login: resetLogin,
+        password: newPassword,
+        confirmPassword,
+      });
+
+      logger.info(`Password reset completed through WordPress for login: ${resetLogin}`);
+      return res.json({ success: true, message: 'Your password has been reset successfully.' });
+    } catch (error) {
+      if (/invalid|expired|match|required/i.test(error.message || '')) {
+        return res.status(400).json({ error: error.message });
+      }
+
+      return next(error);
+    }
+  }
+
+  if (!token) {
+    return res.status(400).json({ error: 'Reset key and login are required' });
   }
 
   const tokenData = consumePasswordResetToken(token);

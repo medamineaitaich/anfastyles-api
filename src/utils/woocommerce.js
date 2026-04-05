@@ -656,6 +656,73 @@ export const triggerWordPressPasswordReset = async (loginOrEmail) => {
   }
 };
 
+export const resetWordPressPassword = async ({ key, login, password, confirmPassword }) => {
+  try {
+    const normalizedKey = String(key || '').trim();
+    const normalizedLogin = String(login || '').trim();
+    const nextPassword = String(password || '');
+    const nextConfirmPassword = String(confirmPassword || nextPassword);
+
+    if (!normalizedKey || !normalizedLogin) {
+      throw new Error('Reset key and login are required');
+    }
+
+    const resetEntryUrl = `${process.env.WC_STORE_URL}/wp-login.php?action=rp&key=${encodeURIComponent(normalizedKey)}&login=${encodeURIComponent(normalizedLogin)}`;
+    const resetEntryResponse = await axios.get(resetEntryUrl, {
+      maxRedirects: 0,
+      validateStatus: (status) => status >= 200 && status < 400,
+    });
+
+    const setCookie = resetEntryResponse.headers?.['set-cookie'] || [];
+    const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
+    const resetCookie = cookies
+      .map((cookie) => String(cookie || '').split(';')[0])
+      .find((cookie) => cookie.toLowerCase().startsWith('wp-resetpass-'));
+
+    if (!resetCookie) {
+      throw new Error('Invalid or expired reset link');
+    }
+
+    const resetSubmitUrl = `${process.env.WC_STORE_URL}/wp-login.php?action=resetpass`;
+    const body = new URLSearchParams();
+    body.set('pass1', nextPassword);
+    body.set('pass2', nextConfirmPassword);
+    body.set('rp_key', normalizedKey);
+    body.set('wp-submit', 'Save Password');
+
+    const resetSubmitResponse = await axios.post(resetSubmitUrl, body.toString(), {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Cookie: resetCookie,
+      },
+      maxRedirects: 0,
+      validateStatus: (status) => status >= 200 && status < 400,
+    });
+
+    const responseBody = String(resetSubmitResponse.data || '');
+    if (/Your password has been reset\./i.test(responseBody)) {
+      return { reset: true, status: resetSubmitResponse.status };
+    }
+
+    if (/passwords do not match/i.test(responseBody)) {
+      throw new Error('Passwords do not match');
+    }
+
+    if (/invalidkey|expiredkey/i.test(responseBody) || /invalid or expired/i.test(responseBody)) {
+      throw new Error('Invalid or expired reset link');
+    }
+
+    throw new Error('Unable to reset password');
+  } catch (error) {
+    if (/Reset key and login are required|Passwords do not match|Invalid or expired reset link|Unable to reset password/i.test(error.message || '')) {
+      throw error;
+    }
+
+    logger.error('WordPress password reset failed:', error.message);
+    throw new Error('Unable to reset password');
+  }
+};
+
 // Export validation function for startup
 export const initializeWooCommerceAPI = () => {
   validateCredentials();
@@ -679,5 +746,6 @@ export default {
   getWordPressUsers,
   verifyWordPressUser,
   triggerWordPressPasswordReset,
+  resetWordPressPassword,
   initializeWooCommerceAPI,
 };
