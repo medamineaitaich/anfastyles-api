@@ -27,6 +27,7 @@ const productCategoryCache = new Map();
 
 const VARIATIONS_PER_PAGE = 100;
 const MAX_WP_USERNAME_LENGTH = 60;
+const SAVED_CART_META_KEY = '_anfastyles_saved_cart';
 
 // Create clients lazily so startup failures point at missing env vars clearly.
 const getWcClient = () => {
@@ -98,6 +99,57 @@ export const buildWooCommerceUsername = (email) => {
   const truncatedBase = baseUsername.slice(0, maxBaseLength) || 'customer';
 
   return `${truncatedBase}-${uniqueSuffix}`;
+};
+
+const sanitizeSavedCartItem = (item = {}) => ({
+  lineKey: String(item.lineKey || '').trim(),
+  productId: Number(item.productId) || 0,
+  variationId: Number(item.variationId) || 0,
+  sku: String(item.sku || '').trim(),
+  name: String(item.name || '').trim(),
+  price: Number.parseFloat(item.price) || 0,
+  image: String(item.image || '').trim(),
+  quantity: Math.max(1, Number(item.quantity) || 1),
+  size: String(item.size || '').trim(),
+  color: String(item.color || '').trim(),
+}).valueOf();
+
+const normalizeSavedCartPayload = (cart = {}) => {
+  const items = Array.isArray(cart?.items)
+    ? cart.items
+      .map((item) => sanitizeSavedCartItem(item))
+      .filter((item) => item.lineKey && item.productId > 0 && item.quantity > 0)
+    : [];
+
+  const subtotal = items.reduce((sum, item) => sum + ((Number(item.price) || 0) * item.quantity), 0);
+  const itemCount = items.reduce((sum, item) => sum + item.quantity, 0);
+  const updatedAt = String(cart?.updatedAt || new Date().toISOString()).trim() || new Date().toISOString();
+
+  return {
+    items,
+    subtotal,
+    itemCount,
+    updatedAt,
+  };
+};
+
+const getCustomerMetaEntries = (customer = {}) => (
+  Array.isArray(customer?.meta_data) ? customer.meta_data : []
+);
+
+const getSavedCartMetaEntry = (customer = {}) => (
+  getCustomerMetaEntries(customer).find((entry) => String(entry?.key || '').trim() === SAVED_CART_META_KEY) || null
+);
+
+const parseSavedCartMetaValue = (value) => {
+  if (!value) return normalizeSavedCartPayload();
+
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return normalizeSavedCartPayload(parsed);
+  } catch {
+    return normalizeSavedCartPayload();
+  }
 };
 
 const isWooCommerceUsernameConflict = (error) => {
@@ -530,12 +582,51 @@ export const updateWooCommerceCustomer = async (customerId, customerData = {}) =
     if (customerData.password !== undefined) payload.password = String(customerData.password || '');
     if (customerData.billing) payload.billing = customerData.billing;
     if (customerData.shipping) payload.shipping = customerData.shipping;
+    if (Array.isArray(customerData.metaData)) payload.meta_data = customerData.metaData;
 
     const response = await getWcClient().put(`/customers/${normalizedCustomerId}`, payload);
     return response.data;
   } catch (error) {
     handleApiError(error, `updateWooCommerceCustomer(${customerId})`);
   }
+};
+
+export const getWooCommerceCustomerSavedCart = async (customerId) => {
+  const customer = await getWooCommerceCustomerById(customerId);
+  const savedCartEntry = getSavedCartMetaEntry(customer);
+
+  return parseSavedCartMetaValue(savedCartEntry?.value);
+};
+
+export const saveWooCommerceCustomerSavedCart = async (customerId, cart = {}) => {
+  const customer = await getWooCommerceCustomerById(customerId);
+  const normalizedCart = normalizeSavedCartPayload(cart);
+  const existingMetaEntries = getCustomerMetaEntries(customer);
+  const existingSavedCartEntry = getSavedCartMetaEntry(customer);
+  const nextMetaEntries = existingMetaEntries
+    .filter((entry) => String(entry?.key || '').trim() !== SAVED_CART_META_KEY)
+    .map((entry) => {
+      const nextEntry = {
+        key: entry?.key,
+        value: entry?.value,
+      };
+
+      if (entry?.id !== undefined) nextEntry.id = entry.id;
+      return nextEntry;
+    });
+
+  nextMetaEntries.push({
+    ...(existingSavedCartEntry?.id !== undefined ? { id: existingSavedCartEntry.id } : {}),
+    key: SAVED_CART_META_KEY,
+    value: JSON.stringify(normalizedCart),
+  });
+
+  const updatedCustomer = await updateWooCommerceCustomer(customerId, {
+    metaData: nextMetaEntries,
+  });
+
+  const updatedSavedCartEntry = getSavedCartMetaEntry(updatedCustomer);
+  return parseSavedCartMetaValue(updatedSavedCartEntry?.value || normalizedCart);
 };
 
 export const createWooCommerceOrder = async (orderData) => {
@@ -738,7 +829,10 @@ export default {
   buildWooCommerceUsername,
   createWooCommerceCustomer,
   getWooCommerceCustomerByEmail,
+  getWooCommerceCustomerById,
   updateWooCommerceCustomer,
+  getWooCommerceCustomerSavedCart,
+  saveWooCommerceCustomerSavedCart,
   createWooCommerceOrder,
   updateWooCommerceOrder,
   getWooCommerceOrder,

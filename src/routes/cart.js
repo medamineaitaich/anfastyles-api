@@ -1,5 +1,7 @@
 import express from 'express';
 import logger from '../utils/logger.js';
+import { requireAuth } from '../middleware/auth.js';
+import { getWooCommerceCustomerSavedCart, saveWooCommerceCustomerSavedCart } from '../utils/woocommerce.js';
 
 const router = express.Router();
 
@@ -21,6 +23,36 @@ router.get('/shipping', (req, res) => {
     shippingCost,
     isFreeShipping: shippingCost === 0,
   });
+});
+
+// GET /cart/account - Return the authenticated customer's saved cart
+router.get('/account', requireAuth, async (req, res, next) => {
+  try {
+    const cart = await getWooCommerceCustomerSavedCart(req.session.userId);
+
+    return res.json({
+      success: true,
+      cart,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// PUT /cart/account - Persist the authenticated customer's saved cart
+router.put('/account', requireAuth, async (req, res, next) => {
+  try {
+    const cart = await saveWooCommerceCustomerSavedCart(req.session.userId, req.body?.cart || req.body || {});
+
+    logger.info(`Saved account cart for customer ${req.session.userId} with ${cart.itemCount || 0} item(s)`);
+
+    return res.json({
+      success: true,
+      cart,
+    });
+  } catch (error) {
+    return next(error);
+  }
 });
 
 export default router;
