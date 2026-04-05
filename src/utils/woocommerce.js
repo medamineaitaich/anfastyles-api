@@ -629,6 +629,33 @@ export const verifyWordPressUser = async (login, password) => {
   }
 };
 
+export const triggerWordPressPasswordReset = async (loginOrEmail) => {
+  try {
+    const resetUrl = `${process.env.WC_STORE_URL}/wp-login.php?action=lostpassword`;
+
+    const body = new URLSearchParams();
+    body.set('user_login', String(loginOrEmail || '').trim());
+    body.set('wp-submit', 'Get New Password');
+    body.set('redirect_to', `${process.env.WC_STORE_URL}/my-account/lost-password/`);
+
+    const response = await axios.post(resetUrl, body.toString(), {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      maxRedirects: 0,
+      validateStatus: (status) => status >= 200 && status < 400,
+    });
+
+    return {
+      accepted: true,
+      status: response.status,
+    };
+  } catch (error) {
+    logger.error('WordPress password reset trigger failed:', error.message);
+    throw new Error('Unable to trigger password reset email');
+  }
+};
+
 // Export validation function for startup
 export const initializeWooCommerceAPI = () => {
   validateCredentials();
@@ -651,5 +678,6 @@ export default {
   getWooCommerceOrdersByCustomer,
   getWordPressUsers,
   verifyWordPressUser,
+  triggerWordPressPasswordReset,
   initializeWooCommerceAPI,
 };

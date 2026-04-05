@@ -1,8 +1,7 @@
 import express from 'express';
-import { createWooCommerceCustomer, getWooCommerceCustomerByEmail, getWooCommerceCustomerById, updateWooCommerceCustomer, verifyWordPressUser } from '../utils/woocommerce.js';
+import { createWooCommerceCustomer, getWooCommerceCustomerByEmail, getWooCommerceCustomerById, triggerWordPressPasswordReset, updateWooCommerceCustomer, verifyWordPressUser } from '../utils/woocommerce.js';
 import { createSession, getSession, deleteSession } from '../utils/sessionManager.js';
-import { sendPasswordResetEmail } from '../utils/mailer.js';
-import { issuePasswordResetToken, consumePasswordResetToken } from '../utils/passwordResetTokens.js';
+import { consumePasswordResetToken } from '../utils/passwordResetTokens.js';
 import { requireAuth } from '../middleware/auth.js';
 import logger from '../utils/logger.js';
 
@@ -134,25 +133,6 @@ const FORGOT_PASSWORD_SUCCESS_RESPONSE = {
 };
 
 const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(email));
-
-const getPasswordResetBaseUrl = () => {
-  const configuredUrl = normalizeText(process.env.PASSWORD_RESET_URL);
-  if (configuredUrl) return configuredUrl;
-
-  const frontendBaseUrl = normalizeText(process.env.FRONTEND_URL || 'https://anfastyles.shop').replace(/\/+$/, '');
-  return `${frontendBaseUrl}/reset-password`;
-};
-
-const buildPasswordResetUrl = (token) => {
-  const resetUrl = new URL(getPasswordResetBaseUrl());
-  resetUrl.searchParams.set('token', token);
-  return resetUrl.toString();
-};
-
-const getCustomerDisplayName = (customer, email) => {
-  const name = `${customer?.first_name || ''} ${customer?.last_name || ''}`.trim();
-  return name || normalizeEmail(email);
-};
 
 // POST /auth/login - Login with email and password
 router.post('/login', async (req, res, next) => {
@@ -323,19 +303,9 @@ router.post('/forgot-password', async (req, res, next) => {
       return res.json(FORGOT_PASSWORD_SUCCESS_RESPONSE);
     }
 
-    const { token, expiresInMinutes } = issuePasswordResetToken({
-      customerId: customer.id,
-      email: normalizedEmail,
-    });
-
-    await sendPasswordResetEmail({
-      to: normalizedEmail,
-      name: getCustomerDisplayName(customer, normalizedEmail),
-      resetUrl: buildPasswordResetUrl(token),
-      expiresInMinutes,
-    });
-
-    logger.info(`Password reset email queued for customer: ${normalizedEmail}`);
+    const resetLogin = String(customer.username || customer.email || normalizedEmail).trim();
+    await triggerWordPressPasswordReset(resetLogin);
+    logger.info(`Password reset email requested from WordPress for customer: ${normalizedEmail}`);
     return res.json(FORGOT_PASSWORD_SUCCESS_RESPONSE);
   } catch (error) {
     return next(error);
