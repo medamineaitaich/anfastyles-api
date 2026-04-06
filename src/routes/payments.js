@@ -40,10 +40,7 @@ const getStoreBaseUrl = () => {
   return storeUrl ? storeUrl.replace(/\/+$/, '') : '';
 };
 
-const getStripePublishableKey = async () => {
-  const direct = process.env.STRIPE_PUBLISHABLE_KEY ? String(process.env.STRIPE_PUBLISHABLE_KEY).trim() : '';
-  if (direct) return direct;
-
+const scrapeStripePublishableKey = async () => {
   const storeUrl = getStoreBaseUrl();
   if (!storeUrl) return null;
 
@@ -53,7 +50,7 @@ const getStripePublishableKey = async () => {
   }
 
   // Scrape the WP checkout page to find the Stripe gateway publishable key (test or live).
-  // This avoids mismatches between headless Stripe.js and the WooCommerce Stripe gateway configuration.
+  // This keeps headless Stripe.js aligned with the WooCommerce Stripe gateway configuration.
   const checkoutUrl = `${storeUrl}/checkout/`;
   const response = await axios.get(checkoutUrl, { timeout: 20000 });
   const html = String(response?.data || '');
@@ -65,6 +62,29 @@ const getStripePublishableKey = async () => {
   cachedStripePublishableKey = key;
   cachedStripePublishableKeyAtMs = now;
   return key;
+};
+
+const getStripePublishableKey = async () => {
+  const direct = process.env.STRIPE_PUBLISHABLE_KEY ? String(process.env.STRIPE_PUBLISHABLE_KEY).trim() : '';
+  const scraped = await scrapeStripePublishableKey().catch((error) => {
+    logger.warn('Failed to scrape WooCommerce Stripe publishable key, falling back to env if available', {
+      message: error?.message || String(error),
+    });
+    return null;
+  });
+
+  if (scraped) {
+    if (direct && direct !== scraped) {
+      logger.warn('STRIPE_PUBLISHABLE_KEY does not match the WooCommerce Stripe gateway publishable key; using the WooCommerce key', {
+        configuredKeyPrefix: direct.slice(0, 12),
+        wooKeyPrefix: scraped.slice(0, 12),
+      });
+    }
+
+    return scraped;
+  }
+
+  return direct || null;
 };
 
 const getWooPaymentsConfig = async () => {
