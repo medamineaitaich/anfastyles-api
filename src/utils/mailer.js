@@ -36,6 +36,16 @@ const getTransport = () => {
   return transport;
 };
 
+const getResolvedFromConfig = () => {
+  const fromEmail = normalizeText(process.env.CONTACT_FROM_EMAIL || process.env.SMTP_FROM_EMAIL || process.env.MAIL_FROM_EMAIL);
+  const fromName = normalizeText(process.env.CONTACT_FROM_NAME || process.env.SMTP_FROM_NAME || process.env.MAIL_FROM_NAME || 'AnfaStyles');
+
+  return {
+    fromEmail,
+    fromName,
+  };
+};
+
 export const sendPasswordResetEmail = async ({
   to,
   name,
@@ -103,6 +113,89 @@ export const sendPasswordResetEmail = async ({
   return info;
 };
 
+export const sendContactFormEmail = async ({
+  name,
+  email,
+  subject,
+  message,
+  orderNumber,
+  ipAddress,
+}) => {
+  const recipient = normalizeText(process.env.CONTACT_TO_EMAIL || process.env.MAIL_TO_EMAIL);
+  const resolvedTransport = getTransport();
+  const { fromEmail, fromName } = getResolvedFromConfig();
+  const senderName = normalizeText(name) || 'Website visitor';
+  const senderEmail = normalizeText(email).toLowerCase();
+  const cleanedSubject = normalizeText(subject) || 'Website contact form submission';
+  const cleanedMessage = normalizeText(message);
+  const cleanedOrderNumber = normalizeText(orderNumber);
+  const cleanedIp = normalizeText(ipAddress);
+
+  if ((!resolvedTransport || !fromEmail || !recipient) && process.env.NODE_ENV !== 'production') {
+    logger.info('Contact email fallback', {
+      to: recipient || null,
+      from: fromEmail || null,
+      senderName,
+      senderEmail,
+      subject: cleanedSubject,
+      orderNumber: cleanedOrderNumber || null,
+      ipAddress: cleanedIp || null,
+      message: cleanedMessage,
+    });
+
+    return {
+      accepted: recipient ? [recipient] : [],
+      messageId: 'dev-contact-email-fallback',
+    };
+  }
+
+  if (!resolvedTransport || !fromEmail || !recipient) {
+    throw new Error('Contact email is not configured');
+  }
+
+  const subjectLine = `[Contact] ${cleanedSubject}`;
+  const text = [
+    'New contact form submission',
+    '',
+    `Name: ${senderName}`,
+    `Email: ${senderEmail}`,
+    `Subject: ${cleanedSubject}`,
+    `Order number: ${cleanedOrderNumber || 'N/A'}`,
+    `IP address: ${cleanedIp || 'N/A'}`,
+    '',
+    'Message:',
+    cleanedMessage,
+  ].join('\n');
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; color: #1f2937; line-height: 1.6;">
+      <h2 style="margin-bottom: 16px;">New contact form submission</h2>
+      <p><strong>Name:</strong> ${senderName}</p>
+      <p><strong>Email:</strong> <a href="mailto:${senderEmail}">${senderEmail}</a></p>
+      <p><strong>Subject:</strong> ${cleanedSubject}</p>
+      <p><strong>Order number:</strong> ${cleanedOrderNumber || 'N/A'}</p>
+      <p><strong>IP address:</strong> ${cleanedIp || 'N/A'}</p>
+      <div style="margin-top: 20px;">
+        <p><strong>Message:</strong></p>
+        <p style="white-space: pre-wrap;">${cleanedMessage}</p>
+      </div>
+    </div>
+  `;
+
+  const info = await resolvedTransport.sendMail({
+    from: `${fromName} <${fromEmail}>`,
+    to: recipient,
+    replyTo: senderEmail,
+    subject: subjectLine,
+    text,
+    html,
+  });
+
+  logger.info(`Contact form email sent from ${senderEmail}`, info?.messageId ? `messageId=${info.messageId}` : '');
+  return info;
+};
+
 export default {
   sendPasswordResetEmail,
+  sendContactFormEmail,
 };
