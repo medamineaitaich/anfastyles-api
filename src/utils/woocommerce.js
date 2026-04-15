@@ -102,6 +102,7 @@ export const buildWooCommerceUsername = (email) => {
 };
 
 const sanitizeSavedCartItem = (item = {}) => ({
+  ...item,
   lineKey: String(item.lineKey || '').trim(),
   productId: Number(item.productId) || 0,
   variationId: Number(item.variationId) || 0,
@@ -116,9 +117,24 @@ const sanitizeSavedCartItem = (item = {}) => ({
 
 const normalizeSavedCartPayload = (cart = {}) => {
   const items = Array.isArray(cart?.items)
-    ? cart.items
+    ? [...cart.items
       .map((item) => sanitizeSavedCartItem(item))
       .filter((item) => item.lineKey && item.productId > 0 && item.quantity > 0)
+      .reduce((itemMap, item) => {
+        const existingItem = itemMap.get(item.lineKey);
+
+        if (existingItem) {
+          itemMap.set(item.lineKey, {
+            ...existingItem,
+            ...item,
+            quantity: existingItem.quantity + item.quantity,
+          });
+        } else {
+          itemMap.set(item.lineKey, item);
+        }
+
+        return itemMap;
+      }, new Map()).values()]
     : [];
 
   const subtotal = items.reduce((sum, item) => sum + ((Number(item.price) || 0) * item.quantity), 0);
